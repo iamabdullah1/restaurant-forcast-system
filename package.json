@@ -1,0 +1,11 @@
+{
+  "name": "restaurant-forecast",
+  "private": true,
+  "description": "Restaurant forecast system for inventory management and profit margins",
+  "scripts": {
+    "mcp": "cd mcp-server && npm start",
+    "mcp:dev": "cd mcp-server && npm run dev",
+    "ml": "cd ml-service && uvicorn app.main:app --reload --port 8000",
+    "dev": "cd frontend && npm run dev"
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "products": {
+    "Burgers": {
+      "sellPrice": 12.99,
+      "costPrice": 5.50,
+      "profitPerUnit": 7.49,
+      "marginPercent": 57,
+      "category": "main",
+      "inventory": {
+        "unit": "units",
+        "minStockDaily": 400,
+        "reorderPoint": 500,
+        "maxStockDaily": 1200,
+        "leadTimeDays": 1
+      }
+    },
+    "Chicken Sandwiches": {
+      "sellPrice": 9.95,
+      "costPrice": 4.00,
+      "profitPerUnit": 5.95,
+      "marginPercent": 60,
+      "category": "main",
+      "inventory": {
+        "unit": "units",
+        "minStockDaily": 150,
+        "reorderPoint": 200,
+        "maxStockDaily": 500,
+        "leadTimeDays": 1
+      }
+    },
+    "Fries": {
+      "sellPrice": 3.49,
+      "costPrice": 0.80,
+      "profitPerUnit": 2.69,
+      "marginPercent": 77,
+      "category": "side",
+      "inventory": {
+        "unit": "units",
+        "minStockDaily": 450,
+        "reorderPoint": 550,
+        "maxStockDaily": 1400,
+        "leadTimeDays": 1
+      }
+    },
+    "Beverages": {
+      "sellPrice": 2.95,
+      "costPrice": 0.50,
+      "profitPerUnit": 2.45,
+      "marginPercent": 83,
+      "category": "drink",
+      "inventory": {
+        "unit": "units",
+        "minStockDaily": 500,
+        "reorderPoint": 600,
+        "maxStockDaily": 1500,
+        "leadTimeDays": 1
+      }
+    },
+    "Sides & Other": {
+      "sellPrice": 4.99,
+      "costPrice": 1.50,
+      "profitPerUnit": 3.49,
+      "marginPercent": 70,
+      "category": "side",
+      "inventory": {
+        "unit": "units",
+        "minStockDaily": 150,
+        "reorderPoint": 200,
+        "maxStockDaily": 500,
+        "leadTimeDays": 1
+      }
+    }
+  },
+  "statusThresholds": {
+    "green": "stock >= reorderPoint",
+    "yellow": "minStockDaily <= stock < reorderPoint",
+    "red": "stock < minStockDaily"
+  },
+  "restaurantInfo": {
+    "name": "Forecast Bites",
+    "branch": "Main Branch",
+    "country": "US",
+    "currency": "USD",
+    "timezone": "America/New_York"
+  }
+}

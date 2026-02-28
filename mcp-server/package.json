@@ -1,0 +1,16 @@
+{
+  "name": "restaurant-mcp-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP Server — Single source of truth for restaurant forecast tools",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/scripts/seed.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "mongoose": "^9.2.3"
+  }
+}
