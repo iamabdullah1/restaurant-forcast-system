@@ -1,8 +1,15 @@
-fastapi==0.109.0
-uvicorn==0.27.0
-pandas==2.2.0
-numpy==1.26.3
-prophet==1.1.5
-scikit-learn==1.4.0
-pymongo==4.6.1
-python-dotenv==1.0.0
+# ── Web Framework ──
+fastapi==0.115.8        # REST API framework (like Express.js for Python)
+uvicorn==0.34.0         # ASGI server that runs FastAPI (like nodemon for Python)
+
+# ── Data Science ──
+pandas==3.0.1           # DataFrames — think "Excel in code" for data manipulation
+numpy==2.4.2            # Math/array operations (pandas depends on this)
+prophet==1.3.0          # Facebook's time-series forecasting model (the ML brain)
+scikit-learn==1.6.1     # ML utilities — metrics, preprocessing, model evaluation
+
+# ── Database ──
+pymongo==4.11.3         # MongoDB driver for Python (like mongoose for Node.js)
+
+# ── Config ──
+python-dotenv==1.0.1    # Reads .env file into environment variables

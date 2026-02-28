@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "restaurant-forecast": {
+      "command": "node",
+      "args": ["src/index.js"],
+      "cwd": "${workspaceFolder}/mcp-server",
+      "env": {
+        "MONGODB_URI": "mongodb+srv://iamabdullahakram1:baig03092597570@invest-x.a3lod1o.mongodb.net/restaurant-forecast?retryWrites=true&w=majority",
+        "ML_SERVICE_URL": "http://localhost:8000"
+      }
+    }
+  }
+}
