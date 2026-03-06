@@ -13,7 +13,7 @@ const nextConfig = {
   serverExternalPackages: [
     "@modelcontextprotocol/sdk",
     "@langchain/core",
-    "@langchain/xai",
+    "@langchain/google-genai",
     "langchain",
     "zod",
   ],

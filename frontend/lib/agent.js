@@ -76,7 +76,7 @@
  *    own docs now recommend this approach.
  */
 
-import { ChatXAI } from "@langchain/xai";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ToolMessage } from "@langchain/core/messages";
 import { getMCPTools } from "./mcp-client.js";
 import { chatPrompt } from "./prompts.js";
@@ -84,20 +84,19 @@ import { getChatHistory, addToMemory } from "./memory.js";
 
 // ─── CREATE THE LLM ─────────────────────────────────────
 /**
- * 🎓 ChatXAI — LangChain's Wrapper for Grok (xAI)
+ * 🎓 ChatGoogleGenerativeAI — LangChain's Wrapper for Gemini (Google)
  *
- *    ChatXAI is a class that wraps the xAI API (which runs Grok).
- *    It's similar to ChatOpenAI but for xAI's models.
+ *    ChatGoogleGenerativeAI wraps Google's Gemini API.
+ *    We use Gemini 2.0 Flash — fast, free tier, excellent tool calling.
  *
  *    Parameters:
- *    - model: "grok-3-mini-fast" — which Grok model to use
- *      (we use mini-fast for speed + lower cost. Options:
- *       "grok-3" = full power, "grok-3-mini" = balanced,
- *       "grok-3-mini-fast" = fast + cheap)
+ *    - model: "gemini-2.0-flash" — Google's fastest Gemini model
+ *      (Options: "gemini-2.0-flash" = fast + free,
+ *       "gemini-1.5-pro" = more powerful but slower)
  *
- *    - apiKey: from .env → XAI_API_KEY
- *      The xAI API key that authenticates our requests.
- *      process.env reads it from the .env file at project root.
+ *    - apiKey: from .env → GOOGLE_API_KEY
+ *      Free API key from aistudio.google.com
+ *      15 requests/min, 1500 requests/day — plenty for us.
  *
  *    - temperature: 0.3
  *      Controls randomness. 0 = deterministic, 1 = creative.
@@ -107,7 +106,7 @@ import { getChatHistory, addToMemory } from "./memory.js";
  *
  * 🎓 WHY LAZY INITIALIZATION?
  *    We create the LLM inside a function (not at module level)
- *    because process.env.XAI_API_KEY might not be available
+ *    because process.env.GOOGLE_API_KEY might not be available
  *    when the module first loads in Next.js. By creating it
  *    lazily (on first use), we ensure the env var is loaded.
  */
@@ -115,9 +114,9 @@ let llmInstance = null;
 
 function getLLM() {
   if (!llmInstance) {
-    llmInstance = new ChatXAI({
-      model: "grok-3-mini-fast",
-      apiKey: process.env.XAI_API_KEY,
+    llmInstance = new ChatGoogleGenerativeAI({
+      model: "gemini-2.0-flash",
+      apiKey: process.env.GOOGLE_API_KEY,
       temperature: 0.3,
     });
   }
