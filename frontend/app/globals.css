@@ -1,26 +1,338 @@
+/**
+ * 🎨 Global Styles — Restaurant Forecast System
+ * ═══════════════════════════════════════════════
+ *
+ * 🎓 WHAT IS THIS FILE?
+ *    This is the GLOBAL stylesheet for our entire app.
+ *    It's imported in layout.js, so every page gets these styles.
+ *
+ *    We define:
+ *    1. Tailwind import (utility classes)
+ *    2. CSS custom properties (colors, sizes — easy to change)
+ *    3. Base styles (body, scrollbar, selection)
+ *    4. Chat-specific styles (messages, animations, markdown)
+ *
+ * 🎓 WHY CSS CUSTOM PROPERTIES?
+ *    Instead of hardcoding colors everywhere like:
+ *      background: #0f172a;  ← what is this color? hard to change
+ *
+ *    We define them once:
+ *      --bg-primary: #0f172a;
+ *    And use them everywhere:
+ *      background: var(--bg-primary);  ← clear name, change once
+ *
+ * 🎓 TAILWIND v4 + @import:
+ *    Tailwind v4 uses `@import "tailwindcss"` instead of
+ *    the old @tailwind directives. This gives us all the
+ *    utility classes (flex, p-4, text-white, etc.)
+ */
+
 @import "tailwindcss";
 
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   🎨 COLOR PALETTE — Dark Restaurant Theme
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* ── Background layers (dark → darker) ── */
+  --bg-primary: #0f172a;     /* Main background — deep navy */
+  --bg-secondary: #1e293b;   /* Cards, sidebar — slightly lighter */
+  --bg-tertiary: #334155;    /* Inputs, hover states */
+
+  /* ── Text colors ── */
+  --text-primary: #f1f5f9;   /* Main text — almost white */
+  --text-secondary: #94a3b8; /* Muted text — gray-blue */
+  --text-muted: #64748b;     /* Very muted — timestamps, hints */
+
+  /* ── Accent colors ── */
+  --accent: #f97316;         /* Orange — restaurant/food theme 🍊 */
+  --accent-hover: #fb923c;   /* Lighter orange for hover */
+  --accent-glow: rgba(249, 115, 22, 0.15); /* Soft glow behind buttons */
+
+  /* ── Chat bubbles ── */
+  --bubble-user: #1e3a5f;    /* User message — blue tint */
+  --bubble-ai: #1e293b;      /* AI message — neutral dark */
+
+  /* ── Borders & dividers ── */
+  --border: #334155;         /* Subtle borders */
+  --border-light: #475569;   /* Slightly more visible */
+
+  /* ── Status colors ── */
+  --success: #22c55e;        /* Green — tool complete */
+  --warning: #eab308;        /* Yellow — loading */
+  --error: #ef4444;          /* Red — errors */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   📐 BASE STYLES
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/**
+ * 🎓 WHY THESE BASE STYLES?
+ *    - Dark background by default (restaurant/dashboard vibe)
+ *    - Smooth font rendering (antialiased)
+ *    - Custom scrollbar that matches the dark theme
+ *    - Selection color matches our accent (orange)
+ */
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Custom Scrollbar (Webkit — Chrome, Safari, Edge) ── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+}
+
+/* ── Text Selection ── */
+::selection {
+  background: var(--accent);
+  color: white;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   💬 CHAT MARKDOWN STYLES
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/**
+ * 🎓 WHY NOT JUST USE TAILWIND FOR EVERYTHING?
+ *    Tailwind is great for layout (flex, padding, margin).
+ *    But for complex nested styles (like markdown rendering
+ *    inside chat messages), CSS classes are cleaner.
+ *
+ *    When the AI returns markdown like:
+ *      **bold text**, tables, code blocks, lists
+ *    We need to style ALL those nested HTML elements.
+ */
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3 {
+  font-weight: 700;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.chat-markdown h1 { font-size: 1.25rem; }
+.chat-markdown h2 { font-size: 1.125rem; }
+.chat-markdown h3 { font-size: 1rem; }
+
+.chat-markdown p {
+  margin-bottom: 0.75rem;
+  line-height: 1.7;
+}
+
+.chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown strong {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.chat-markdown em {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.chat-markdown ul { list-style-type: disc; }
+.chat-markdown ol { list-style-type: decimal; }
+
+.chat-markdown li {
+  margin-bottom: 0.25rem;
+  line-height: 1.6;
+}
+
+/* ── Tables (for sales data, inventory reports) ── */
+.chat-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.875rem;
+}
+
+.chat-markdown th {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--border-light);
+}
+
+.chat-markdown td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.chat-markdown tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── Code blocks ── */
+.chat-markdown code {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.85em;
+}
+
+.chat-markdown pre {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+
+.chat-markdown pre code {
+  background: transparent;
+  padding: 0;
+  color: var(--text-primary);
+}
+
+/* ── Blockquotes ── */
+.chat-markdown blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
+  margin: 0.75rem 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* ── Horizontal rules ── */
+.chat-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1rem 0;
+}
+
+/* ── Links ── */
+.chat-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-markdown a:hover {
+  color: var(--accent-hover);
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   🎭 ANIMATIONS
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/**
+ * 🎓 WHY ANIMATIONS?
+ *    - Pulse: for "typing" indicator dots (AI is thinking)
+ *    - Fade-in: messages appear smoothly
+ *    - Slide-up: new messages slide up from the bottom
+ *    - Spin: loading spinner rotation
+ */
+
+@keyframes pulse-dot {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* ── Typing indicator dots (iMessage style) ── */
+.typing-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   🛠️ UTILITY STYLES
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* Smooth scroll for chat message area */
+.chat-scroll {
+  scroll-behavior: smooth;
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Glass effect for floating elements */
+.glass {
+  background: rgba(30, 41, 59, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }

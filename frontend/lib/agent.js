@@ -362,3 +362,224 @@ export async function runAgent(userMessage, sessionId) {
   await addToMemory(sessionId, userMessage, fallbackMsg);
   return fallbackMsg;
 }
+
+// ─── STREAMING VERSION OF THE AGENT ─────────────────────
+/**
+ * 🎓 WHAT IS STREAMING?
+ *    In the non-streaming version (runAgent above), the user
+ *    waits for the ENTIRE response — all tool calls + final
+ *    answer — before seeing anything. This can take 5-30 seconds.
+ *
+ *    With streaming, we send LIVE UPDATES as things happen:
+ *
+ *    Non-streaming (bad UX):
+ *    ┌──────────────────────────────────────────┐
+ *    │ User: "Am I ready for Thanksgiving?"      │
+ *    │                                           │
+ *    │ [........... 15 seconds of nothing ......] │
+ *    │                                           │
+ *    │ AI: "Here's your full report: ..."        │  ← all at once
+ *    └──────────────────────────────────────────┘
+ *
+ *    Streaming (great UX):
+ *    ┌──────────────────────────────────────────┐
+ *    │ User: "Am I ready for Thanksgiving?"      │
+ *    │                                           │
+ *    │ 🔧 Checking upcoming festivals...         │  ← instant feedback
+ *    │ 🔧 Checking inventory levels...           │  ← 2 sec later
+ *    │ 🔧 Forecasting demand...                  │  ← 4 sec later
+ *    │ Here's your Thanksgiving prep report:     │  ← word
+ *    │ Here's your Thanksgiving prep report: 🧡  │  ← by
+ *    │ Here's your Thanksgiving prep report: 🧡  │  ← word
+ *    │ Thanksgiving is in 22 days...             │  ← typing effect!
+ *    └──────────────────────────────────────────┘
+ *
+ * 🎓 HOW SSE (Server-Sent Events) WORKS:
+ *    SSE is a web standard where the server keeps an HTTP connection
+ *    open and pushes events to the client one at a time:
+ *
+ *    Server sends:
+ *      data: {"type":"tool_start","tool":"forecast_demand"}\n\n
+ *      data: {"type":"tool_end","tool":"forecast_demand"}\n\n
+ *      data: {"type":"token","content":"Based"}\n\n
+ *      data: {"type":"token","content":" on"}\n\n
+ *      data: {"type":"token","content":" the"}\n\n
+ *      data: {"type":"done","fullText":"Based on the forecast..."}\n\n
+ *
+ *    Client receives each event as it arrives → updates UI instantly.
+ *
+ * 🎓 READABLE STREAM:
+ *    We use a Web API ReadableStream to push SSE events.
+ *    The stream stays open while the agent works, sends events
+ *    as things happen, and closes when the agent is done.
+ *
+ *    This is how ChatGPT, Claude, and Gemini do their typing effect.
+ *
+ * @param {string} userMessage - What the user typed
+ * @param {string} sessionId - Unique session identifier
+ * @returns {ReadableStream} - SSE event stream
+ */
+export function runAgentStreaming(userMessage, sessionId) {
+  /**
+   * 🎓 ReadableStream — A Web API for streaming data
+   *
+   *    The `start(controller)` function runs when the stream begins.
+   *    We use `controller.enqueue()` to push data chunks to the client.
+   *    We use `controller.close()` when we're done.
+   *
+   *    Each chunk is an SSE-formatted string: "data: {...json...}\n\n"
+   *    The double newline (\n\n) tells the browser "this event is complete."
+   */
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+
+      /**
+       * 🎓 HELPER: Send an SSE event to the client
+       *    Formats the data as an SSE message and pushes it to the stream.
+       *    SSE format: "data: {json}\n\n"
+       */
+      function sendEvent(data) {
+        const sseMessage = `data: ${JSON.stringify(data)}\n\n`;
+        controller.enqueue(encoder.encode(sseMessage));
+      }
+
+      try {
+        // ── Same setup as runAgent ──
+        const tools = await getMCPTools();
+        const llm = getLLM();
+        const llmWithTools = llm.bindTools(tools);
+        const chatHistory = await getChatHistory(sessionId);
+
+        const messages = await chatPrompt.formatMessages({
+          input: userMessage,
+          chat_history: chatHistory,
+          agent_scratchpad: [],
+        });
+
+        // Tell the client we're starting
+        sendEvent({ type: "status", message: "🧠 Thinking..." });
+
+        let fullText = "";
+
+        // ── THE AGENT LOOP (same logic, but with events) ──
+        for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+          const response = await llmWithTools.invoke(messages);
+
+          if (!response.tool_calls || response.tool_calls.length === 0) {
+            // ── FINAL RESPONSE — Stream it word by word ──
+            /**
+             * 🎓 WHY SPLIT INTO WORDS?
+             *    The LLM returns the full text at once (since tool
+             *    calling doesn't support token-level streaming easily).
+             *    We split it into words and send them with tiny delays
+             *    to create a natural typing effect.
+             *
+             *    Real token streaming (like ChatGPT) streams from the
+             *    LLM API itself. Our approach simulates it — the visual
+             *    effect is the same for the user.
+             */
+            fullText = response.content;
+
+            // Split into small chunks (words) for typing effect
+            const words = fullText.split(" ");
+            for (let w = 0; w < words.length; w++) {
+              const chunk = w === 0 ? words[w] : " " + words[w];
+              sendEvent({ type: "token", content: chunk });
+            }
+
+            // Send completion event with full text
+            sendEvent({ type: "done", fullText });
+
+            // Save to memory
+            await addToMemory(sessionId, userMessage, fullText);
+
+            controller.close();
+            return;
+          }
+
+          // ── TOOL CALLS — Send status updates ──
+          messages.push(response);
+
+          for (const toolCall of response.tool_calls) {
+            /**
+             * 🎓 TOOL STATUS EVENTS
+             *    We send "tool_start" when a tool begins executing,
+             *    and "tool_end" when it finishes. The frontend can
+             *    show a "Checking inventory..." indicator.
+             *
+             *    Friendly names make the UI nicer than raw tool names:
+             *    "forecast_demand" → "📈 Forecasting demand..."
+             */
+            const friendlyNames = {
+              forecast_demand: "📈 Forecasting demand",
+              check_inventory: "📦 Checking inventory",
+              calculate_profit: "💰 Calculating profits",
+              get_upcoming_festivals: "🎉 Checking festivals",
+              get_sales_analytics: "📊 Analyzing sales",
+            };
+
+            const friendlyName =
+              friendlyNames[toolCall.name] || `🔧 Running ${toolCall.name}`;
+
+            sendEvent({
+              type: "tool_start",
+              tool: toolCall.name,
+              message: `${friendlyName}...`,
+            });
+
+            const tool = tools.find((t) => t.name === toolCall.name);
+            let result;
+
+            if (tool) {
+              try {
+                result = await tool.invoke(toolCall.args);
+              } catch (error) {
+                result = `Error executing ${toolCall.name}: ${error.message}`;
+              }
+            } else {
+              result = `Tool "${toolCall.name}" not found.`;
+            }
+
+            sendEvent({
+              type: "tool_end",
+              tool: toolCall.name,
+              message: `${friendlyName} ✅`,
+            });
+
+            messages.push(
+              new ToolMessage({
+                content:
+                  typeof result === "string" ? result : JSON.stringify(result),
+                tool_call_id: toolCall.id,
+                name: toolCall.name,
+              })
+            );
+          }
+
+          // Send status update between iterations
+          sendEvent({ type: "status", message: "🧠 Processing results..." });
+        }
+
+        // Max iterations fallback
+        const fallbackMsg =
+          "I apologize, but I'm having difficulty processing your request. " +
+          "Could you try rephrasing your question?";
+        sendEvent({ type: "token", content: fallbackMsg });
+        sendEvent({ type: "done", fullText: fallbackMsg });
+        await addToMemory(sessionId, userMessage, fallbackMsg);
+        controller.close();
+      } catch (error) {
+        // Send error event to the client
+        sendEvent({
+          type: "error",
+          message: "Something went wrong. Please try again.",
+          details: error.message,
+        });
+        controller.close();
+      }
+    },
+  });
+
+  return stream;
+}
