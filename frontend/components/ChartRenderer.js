@@ -34,6 +34,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
 
@@ -303,6 +304,18 @@ function parseCreateChart(chartInstruction, allToolData) {
     // Verify this is actually a chart instruction
     if (!config._chart_instruction && !config.source_tool) return null;
 
+    // ─── Direct data mode: chart data is pre-built ───────
+    // Used by auto-chart comparison when we construct data
+    // on the backend (e.g., summary totals bar chart)
+    if (config._direct_chart && Array.isArray(config.data)) {
+      return {
+        type: config.chart_type || "bar",
+        title: config.title || "📊 Chart",
+        data: config.data,
+        valueLabel: config.y_label || "Value",
+      };
+    }
+
     const { source_tool, chart_type, title, x_field, y_field, y_label, data_path } = config;
 
     // ─── Step 1: Find the source tool's raw data ─────────
@@ -391,40 +404,175 @@ function parseCreateChart(chartInstruction, allToolData) {
   }
 }
 
+/**
+ * 🎓 parseMultiSourceChart — Merge data from MULTIPLE tools into ONE chart
+ *
+ *    When the LLM calls create_chart with a `sources` array instead of
+ *    a single `source_tool`, this function merges data from multiple tools
+ *    into a single multi-series chart (e.g., two lines on one LineChart).
+ *
+ *    Example use case:
+ *    - "Compare last month's sales with next month's forecast"
+ *    - get_sales_analytics returns daily revenue for past 30 days
+ *    - forecast_demand returns daily predicted_quantity for next 30 days
+ *    - Both get merged into one chart with two lines
+ *
+ *    The key insight: we normalize both series to use sequential index
+ *    labels (Day 1, Day 2, ...) or shortened dates so they align on the
+ *    same x-axis even though they cover different date ranges.
+ */
+function parseMultiSourceChart(chartInstruction, allToolData) {
+  try {
+    const config = typeof chartInstruction === "string"
+      ? JSON.parse(chartInstruction)
+      : chartInstruction;
+
+    if (!config.sources || !Array.isArray(config.sources) || config.sources.length < 2) {
+      return null;
+    }
+
+    const { chart_type, title, sources } = config;
+    const seriesData = [];
+
+    // Extract each series
+    for (const src of sources) {
+      const sourceEntry = allToolData.find((td) => td.tool === src.source_tool);
+      if (!sourceEntry) continue;
+
+      const sourceData = typeof sourceEntry.data === "string"
+        ? JSON.parse(sourceEntry.data)
+        : sourceEntry.data;
+
+      // Find the data array
+      let dataArray = null;
+      if (src.data_path) {
+        dataArray = src.data_path.split(".").reduce((obj, key) => obj?.[key], sourceData);
+      }
+      if (!Array.isArray(dataArray)) {
+        const commonPaths = [
+          "daily_forecast", "product_breakdown", "products",
+          "data", "forecast", "predictions", "trend",
+          "inventory", "by_product", "by_channel",
+        ];
+        for (const path of commonPaths) {
+          if (Array.isArray(sourceData?.[path])) {
+            dataArray = sourceData[path];
+            break;
+          }
+        }
+      }
+      if (!Array.isArray(dataArray) || dataArray.length === 0) continue;
+
+      seriesData.push({
+        label: src.label || src.source_tool,
+        data: dataArray.slice(0, 60),
+        x_field: src.x_field,
+        y_field: src.y_field,
+      });
+    }
+
+    if (seriesData.length < 2) return null;
+
+    // Merge into unified data points
+    // Strategy: use the longest series length, index-based alignment
+    const maxLen = Math.max(...seriesData.map((s) => s.data.length));
+    const mergedData = [];
+
+    for (let i = 0; i < maxLen; i++) {
+      const point = {};
+
+      // Use the first series' x-value as the label, or fall back to index
+      const firstSeries = seriesData[0];
+      if (i < firstSeries.data.length) {
+        const xVal = String(firstSeries.data[i][firstSeries.x_field] || "");
+        point.date = xVal.length > 5 ? xVal.slice(5) : xVal || `Day ${i + 1}`;
+      } else {
+        // Past first series length, use second series x-value
+        for (const s of seriesData) {
+          if (i < s.data.length) {
+            const xVal = String(s.data[i][s.x_field] || "");
+            point.date = xVal.length > 5 ? xVal.slice(5) : xVal || `Day ${i + 1}`;
+            break;
+          }
+        }
+      }
+      if (!point.date) point.date = `Day ${i + 1}`;
+
+      // Add each series' y-value
+      for (const s of seriesData) {
+        if (i < s.data.length) {
+          point[s.label] = Math.round(Number(s.data[i][s.y_field]) || 0);
+        }
+      }
+
+      mergedData.push(point);
+    }
+
+    return {
+      type: chart_type || "line",
+      title: title || "📊 Comparison Chart",
+      multiSeries: true,
+      seriesLabels: seriesData.map((s) => s.label),
+      data: mergedData,
+    };
+  } catch (err) {
+    console.warn("[ChartRenderer] Failed to parse multi-source chart:", err);
+    return null;
+  }
+}
+
 // ─── CHART COMPONENTS ───────────────────────────────────
 
-function LineChartComponent({ data, title, valueLabel }) {
+function LineChartComponent({ data, title, valueLabel, multiSeries, seriesLabels }) {
   return (
     <div className="chart-container">
       <h4 className="chart-title">{title}</h4>
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={multiSeries ? 320 : 280}>
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#333" />
           <XAxis dataKey="date" stroke="#888" tick={{ fill: "#888", fontSize: 11 }} angle={-45} textAnchor="end" height={60} />
           <YAxis stroke="#888" tick={{ fill: "#888", fontSize: 11 }} />
           <Tooltip contentStyle={tooltipStyle} />
-          <Line type="monotone" dataKey="value" name={valueLabel || "Value"} stroke="#f97316" strokeWidth={2} dot={{ fill: "#f97316", r: 3 }} activeDot={{ r: 5, stroke: "#fff" }} />
+          {multiSeries && seriesLabels ? (
+            <>
+              <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }} />
+              {seriesLabels.map((label, i) => (
+                <Line key={label} type="monotone" dataKey={label} name={label} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={{ fill: COLORS[i % COLORS.length], r: 3 }} activeDot={{ r: 5, stroke: "#fff" }} />
+              ))}
+            </>
+          ) : (
+            <Line type="monotone" dataKey="value" name={valueLabel || "Value"} stroke="#f97316" strokeWidth={2} dot={{ fill: "#f97316", r: 3 }} activeDot={{ r: 5, stroke: "#fff" }} />
+          )}
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
-function BarChartComponent({ data, title, valueLabel }) {
+function BarChartComponent({ data, title, valueLabel, multiSeries, seriesLabels }) {
   return (
     <div className="chart-container">
       <h4 className="chart-title">{title}</h4>
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={multiSeries ? 320 : 280}>
         <BarChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-          <XAxis dataKey="name" stroke="#888" tick={{ fill: "#888", fontSize: 11 }} />
+          <XAxis dataKey={multiSeries ? "date" : "name"} stroke="#888" tick={{ fill: "#888", fontSize: 11 }} />
           <YAxis stroke="#888" tick={{ fill: "#888", fontSize: 11 }} />
           <Tooltip contentStyle={tooltipStyle} />
-          <Bar dataKey="value" name={valueLabel || "Value"} radius={[8, 8, 0, 0]}>
-            {data.map((_, index) => (
-              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-            ))}
-          </Bar>
+          {multiSeries && seriesLabels ? (
+            <>
+              <Legend wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }} />
+              {seriesLabels.map((label, i) => (
+                <Bar key={label} dataKey={label} name={label} fill={COLORS[i % COLORS.length]} radius={[8, 8, 0, 0]} />
+              ))}
+            </>
+          ) : (
+            <Bar dataKey="value" name={valueLabel || "Value"} radius={[8, 8, 0, 0]}>
+              {data.map((_, index) => (
+                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              ))}
+            </Bar>
+          )}
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -484,10 +632,24 @@ export default function ChartRenderer({ toolData }) {
     // ─── Pass 1: Process LLM-directed create_chart instructions ───
     for (const entry of toolData) {
       if (entry.tool === "create_chart") {
+        // Try multi-source chart first (comparison charts)
+        const multiChart = parseMultiSourceChart(entry.data, toolData);
+        if (multiChart) {
+          results.push(multiChart);
+          // Mark all source tools as charted
+          try {
+            const config = typeof entry.data === "string" ? JSON.parse(entry.data) : entry.data;
+            for (const src of config.sources || []) {
+              if (src.source_tool) llmChartedTools.add(src.source_tool);
+            }
+          } catch {}
+          continue;
+        }
+
+        // Fall back to single-source chart
         const chart = parseCreateChart(entry.data, toolData);
         if (chart) {
           results.push(chart);
-          // Parse the instruction to find which source_tool it references
           try {
             const config = typeof entry.data === "string" ? JSON.parse(entry.data) : entry.data;
             if (config.source_tool) llmChartedTools.add(config.source_tool);
@@ -520,9 +682,9 @@ export default function ChartRenderer({ toolData }) {
       {charts.map((chart, index) => {
         switch (chart.type) {
           case "line":
-            return <LineChartComponent key={index} data={chart.data} title={chart.title} valueLabel={chart.valueLabel} />;
+            return <LineChartComponent key={index} data={chart.data} title={chart.title} valueLabel={chart.valueLabel} multiSeries={chart.multiSeries} seriesLabels={chart.seriesLabels} />;
           case "bar":
-            return <BarChartComponent key={index} data={chart.data} title={chart.title} valueLabel={chart.valueLabel} />;
+            return <BarChartComponent key={index} data={chart.data} title={chart.title} valueLabel={chart.valueLabel} multiSeries={chart.multiSeries} seriesLabels={chart.seriesLabels} />;
           case "pie":
             return <PieChartComponent key={index} data={chart.data} title={chart.title} />;
           default:

@@ -155,27 +155,30 @@ server.tool(
 // Tool #6: Create chart — LLM decides WHAT to chart, frontend renders it
 server.tool(
   "create_chart",
-  "Create a visual chart/graph from a previously called tool's data. " +
-    "Call this AFTER calling a data tool (like forecast_demand, calculate_profit, etc.) " +
-    "to tell the frontend to render a chart. You do NOT need to pass the data — just specify " +
-    "which tool's output to chart, the chart type, and which fields to use for axes. " +
-    "The frontend already has the raw data from the previous tool call.",
+  "Create a visual chart/graph from tool data. TWO MODES: " +
+    "(A) Single-source: use source_tool + x_field + y_field for one data tool. " +
+    "(B) Multi-source COMPARISON: use 'sources' array to overlay data from 2+ tools on ONE chart " +
+    "(e.g., compare last month's sales trend with next month's forecast on one line chart). " +
+    "The frontend already has the raw data — just tell it what to chart.",
   {
     source_tool: z
       .enum(["forecast_demand", "check_inventory", "calculate_profit", "get_sales_analytics", "get_upcoming_festivals"])
-      .describe("Which tool's output data to visualize"),
+      .optional()
+      .describe("(Single-source mode) Which tool's output data to visualize. Omit this when using 'sources' array."),
     chart_type: z
       .enum(["line", "bar", "pie"])
       .describe("Chart type: 'line' for trends over time, 'bar' for comparing categories, 'pie' for proportions"),
     title: z
       .string()
-      .describe("Chart title shown to the user, e.g. '🔮 Burger Demand — Next 14 Days'"),
+      .describe("Chart title shown to the user, e.g. '📈 Burger Sales: Last Month vs Next Month Forecast'"),
     x_field: z
       .string()
-      .describe("Field name from the tool's output to use as x-axis. e.g. 'date', 'product', 'channel', 'period'"),
+      .optional()
+      .describe("(Single-source mode) Field name for x-axis. e.g. 'date', 'product', 'channel', 'period'"),
     y_field: z
       .string()
-      .describe("Field name from the tool's output to use as y-axis. e.g. 'predicted_quantity', 'revenue', 'gross_profit', 'stock_level'"),
+      .optional()
+      .describe("(Single-source mode) Field name for y-axis. e.g. 'predicted_quantity', 'revenue', 'gross_profit'"),
     y_label: z
       .string()
       .optional()
@@ -184,10 +187,27 @@ server.tool(
       .string()
       .optional()
       .describe(
-        "Dot-notation path to the data array inside the tool's output. " +
-          "e.g. 'daily_forecast' for forecast_demand, 'product_breakdown' for calculate_profit, " +
-          "'data' for get_sales_analytics, 'products' for check_inventory. " +
-          "If omitted, the renderer will try common paths automatically."
+        "(Single-source mode) Dot-notation path to the data array. " +
+          "e.g. 'daily_forecast', 'product_breakdown', 'data', 'products'."
+      ),
+    sources: z
+      .array(
+        z.object({
+          source_tool: z
+            .enum(["forecast_demand", "check_inventory", "calculate_profit", "get_sales_analytics", "get_upcoming_festivals"])
+            .describe("Which tool's output to use for this series"),
+          x_field: z.string().describe("Field name for x-axis in this tool's data"),
+          y_field: z.string().describe("Field name for y-axis in this tool's data"),
+          label: z.string().describe("Legend label for this series, e.g. 'Last Month Sales', 'Next Month Forecast'"),
+          data_path: z.string().optional().describe("Dot-notation path to the data array in this tool's output"),
+        })
+      )
+      .optional()
+      .describe(
+        "(Multi-source COMPARISON mode) Array of 2+ source configs to merge onto ONE chart. " +
+          "Each source references a different tool's data with its own field mappings. " +
+          "Example: compare get_sales_analytics trend with forecast_demand on one line chart. " +
+          "When using sources, omit source_tool/x_field/y_field (use sources instead)."
       ),
   },
   handleCreateChart

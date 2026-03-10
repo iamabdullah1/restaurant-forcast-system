@@ -65,26 +65,16 @@
 // ─── HANDLER ─────────────────────────────────────────────
 /**
  * @param {object} args - Chart configuration from the LLM
- * @param {string} args.source_tool - Which tool's data to chart
+ * @param {string} [args.source_tool] - Which tool's data to chart (single-source mode)
  * @param {string} args.chart_type - "line", "bar", or "pie"
  * @param {string} args.title - Chart title
- * @param {string} args.x_field - Field name for x-axis (e.g., "date", "product")
- * @param {string} args.y_field - Field name for y-axis (e.g., "predicted_quantity", "revenue")
+ * @param {string} [args.x_field] - Field name for x-axis (single-source mode)
+ * @param {string} [args.y_field] - Field name for y-axis (single-source mode)
  * @param {string} [args.y_label] - Display label for y-axis
  * @param {string} [args.data_path] - Dot-notation path to the array in tool output
- *                                     e.g., "daily_forecast", "product_breakdown", "data"
+ * @param {Array}  [args.sources] - Array of source configs for multi-source comparison charts
  */
-export async function handleCreateChart({ source_tool, chart_type, title, x_field, y_field, y_label, data_path }) {
-  /**
-   * 🎓 VALIDATION:
-   *    We do basic validation here, but the REAL work happens
-   *    on the frontend. This handler is a passthrough that:
-   *    1. Confirms the chart config is valid
-   *    2. Returns it as JSON (which gets sent via SSE "tool_end")
-   *    3. ChartRenderer on the frontend reads this config
-   *       and pairs it with the already-captured tool data
-   */
-
+export async function handleCreateChart({ source_tool, chart_type, title, x_field, y_field, y_label, data_path, sources }) {
   const validTools = [
     "forecast_demand",
     "check_inventory",
@@ -93,6 +83,45 @@ export async function handleCreateChart({ source_tool, chart_type, title, x_fiel
     "get_upcoming_festivals",
   ];
 
+  // ─── Multi-source mode (comparison charts) ───
+  if (sources && Array.isArray(sources) && sources.length >= 2) {
+    // Validate each source
+    for (const src of sources) {
+      if (!validTools.includes(src.source_tool)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `Unknown source tool in sources: ${src.source_tool}. Valid tools: ${validTools.join(", ")}`,
+              }),
+            },
+          ],
+        };
+      }
+    }
+
+    const chartConfig = {
+      _chart_instruction: true,
+      chart_type,
+      title: title || "📊 Comparison Chart",
+      sources: sources.map(src => ({
+        source_tool: src.source_tool,
+        x_field: src.x_field,
+        y_field: src.y_field,
+        label: src.label || src.source_tool,
+        data_path: src.data_path || null,
+      })),
+    };
+
+    console.error(`[create_chart] Multi-source: ${chart_type} chart from ${sources.map(s => s.source_tool).join(" + ")}`);
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(chartConfig) }],
+    };
+  }
+
+  // ─── Single-source mode (original behavior) ───
   if (!validTools.includes(source_tool)) {
     return {
       content: [
@@ -106,16 +135,15 @@ export async function handleCreateChart({ source_tool, chart_type, title, x_fiel
     };
   }
 
-  // Build the chart instruction (this is what ChartRenderer reads)
   const chartConfig = {
-    _chart_instruction: true,  // Flag so ChartRenderer knows this is a chart command
+    _chart_instruction: true,
     source_tool,
     chart_type,
     title: title || `📊 Chart`,
     x_field,
     y_field,
     y_label: y_label || "Value",
-    data_path: data_path || null,  // Optional: where the array lives in the source data
+    data_path: data_path || null,
   };
 
   console.error(`[create_chart] LLM requested: ${chart_type} chart from ${source_tool} (x=${x_field}, y=${y_field})`);

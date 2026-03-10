@@ -769,6 +769,7 @@ export function runAgentStreaming(userMessage, sessionId) {
         let fullText = "";
         let lastToolSignature = ""; // Track duplicate tool calls
         const calledTools = []; // Track which tools were called for auto-chart fallback
+        const fullToolResults = {}; // Store FULL (unsummarized) tool results for auto-chart comparison
 
         // ── THE AGENT LOOP (same logic, but with events) ──
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
@@ -782,105 +783,209 @@ export function runAgentStreaming(userMessage, sessionId) {
              *    instead of calling create_chart after data tools.
              *    We detect this and auto-inject chart calls so the
              *    user always gets visualizations with data responses.
+             *
+             *    ALSO: Even if the LLM DID call create_chart, it may
+             *    have only made individual charts. When both sales analytics
+             *    and forecast are present, we ALWAYS inject a comparison chart.
              */
             const dataToolsCalled = calledTools.filter(
               (t) => t !== "create_chart" && t !== "check_inventory" && t !== "get_upcoming_festivals"
             );
             const chartCalled = calledTools.includes("create_chart");
 
-            if (dataToolsCalled.length > 0 && !chartCalled) {
-              console.error(`🔄 Auto-chart: LLM skipped create_chart for ${dataToolsCalled.join(", ")}. Injecting chart calls...`);
+            /**
+             * 🎓 AUTO-CHART CONFIG — Smart defaults per tool
+             */
+            function getAutoChartConfig(toolName, toolResult) {
+              try {
+                const data = typeof toolResult === "string" ? JSON.parse(toolResult) : toolResult;
 
-              /**
-               * 🎓 AUTO-CHART CONFIG — Smart defaults per tool
-               *
-               *    Each tool can return different data shapes depending
-               *    on the query (single product vs all, trend vs by_product, etc.).
-               *    We provide a config FUNCTION that inspects the actual tool
-               *    output to pick the right chart type, fields, and data path.
-               *
-               *    ⚠️ IMPORTANT: `title` is REQUIRED by the create_chart MCP tool schema.
-               *       Missing it causes a silent Zod validation error!
-               */
-              function getAutoChartConfig(toolName, toolResult) {
-                try {
-                  const data = typeof toolResult === "string" ? JSON.parse(toolResult) : toolResult;
+                switch (toolName) {
+                  case "forecast_demand":
+                    if (data.product_summaries) {
+                      return { title: "🔮 Demand Forecast — All Products", chart_type: "bar", x_field: "product", y_field: "total_predicted_quantity", data_path: "product_summaries" };
+                    }
+                    if (data.daily_forecast_sample || data.daily_forecast || data.summary) {
+                      const productName = data.metadata?.product || data.summary?.product || "Forecast";
+                      return { title: `🔮 Demand Forecast — ${productName}`, chart_type: "line", x_field: "date", y_field: "predicted_quantity", data_path: "daily_forecast" };
+                    }
+                    return null;
 
-                  // NOTE: toolResult may be the SUMMARIZED version (from summarizeToolResult)
-                  // which uses different field names:
-                  //   - forecast_demand: daily_forecast_sample (not daily_forecast)
-                  //   - get_sales_analytics: data_sample (not data), but analysis_type is preserved
-                  //   - calculate_profit: product_breakdown is preserved as-is
+                  case "get_sales_analytics":
+                    if (data.analysis_type === "trend") {
+                      return { title: "📈 Sales Trend", chart_type: "line", x_field: "period", y_field: "revenue", data_path: "data" };
+                    }
+                    if (data.analysis_type === "by_product") {
+                      return { title: "📊 Sales by Product", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
+                    }
+                    if (data.analysis_type === "by_channel") {
+                      return { title: "📊 Sales by Channel", chart_type: "pie", x_field: "channel", y_field: "revenue", data_path: "data" };
+                    }
+                    if (data.analysis_type === "top_sellers") {
+                      return { title: "🏆 Top Sellers", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data.by_revenue" };
+                    }
+                    if (data.analysis_type) {
+                      return { title: "📊 Sales Analytics", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
+                    }
+                    return null;
 
-                  switch (toolName) {
-                    case "forecast_demand":
-                      // Multi-product: has product_summaries array
-                      if (data.product_summaries) {
-                        return { title: "🔮 Demand Forecast — All Products", chart_type: "bar", x_field: "product", y_field: "total_predicted_quantity", data_path: "product_summaries" };
-                      }
-                      // Single product: detect from summary/metadata or daily_forecast_sample
-                      if (data.daily_forecast_sample || data.daily_forecast || data.summary) {
-                        const productName = data.metadata?.product || data.summary?.product || "Forecast";
-                        return { title: `🔮 Demand Forecast — ${productName}`, chart_type: "line", x_field: "date", y_field: "predicted_quantity", data_path: "daily_forecast" };
-                      }
-                      return null;
+                  case "calculate_profit":
+                    if (data.product_breakdown && Array.isArray(data.product_breakdown)) {
+                      return { title: "💰 Profit by Product", chart_type: "bar", x_field: "product", y_field: "gross_profit", data_path: "product_breakdown" };
+                    }
+                    return null;
 
-                    case "get_sales_analytics":
-                      // analysis_type is always preserved in both full and summarized versions
-                      if (data.analysis_type === "trend") {
-                        return { title: "📈 Sales Trend", chart_type: "line", x_field: "period", y_field: "revenue", data_path: "data" };
-                      }
-                      if (data.analysis_type === "by_product") {
-                        return { title: "📊 Sales by Product", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
-                      }
-                      if (data.analysis_type === "by_channel") {
-                        return { title: "📊 Sales by Channel", chart_type: "pie", x_field: "channel", y_field: "revenue", data_path: "data" };
-                      }
-                      if (data.analysis_type === "top_sellers") {
-                        return { title: "🏆 Top Sellers", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data.by_revenue" };
-                      }
-                      // Fallback: default to bar chart
-                      if (data.analysis_type) {
-                        return { title: "📊 Sales Analytics", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
-                      }
-                      return null;
+                  default:
+                    return null;
+                }
+              } catch {
+                return null;
+              }
+            }
 
-                    case "calculate_profit":
-                      // product_breakdown is preserved in both full and summarized versions
-                      if (data.product_breakdown && Array.isArray(data.product_breakdown)) {
-                        return { title: "💰 Profit by Product", chart_type: "bar", x_field: "product", y_field: "gross_profit", data_path: "product_breakdown" };
-                      }
-                      return null;
+            const chartTool = tools.find((t) => t.name === "create_chart");
 
-                    default:
-                      return null;
+            if (chartTool && dataToolsCalled.length > 0) {
+              const chartedTools = new Set();
+
+              // ═══════════════════════════════════════════════════════
+              // ALWAYS: Check for COMPARISON opportunities
+              // Even if the LLM called create_chart for individual
+              // charts, we still inject a merged comparison chart.
+              // ═══════════════════════════════════════════════════════
+              const hasSales = dataToolsCalled.includes("get_sales_analytics");
+              const hasForecast = dataToolsCalled.includes("forecast_demand");
+
+              if (hasSales && hasForecast) {
+                // Use FULL (unsummarized) tool results — the messages array
+                // only contains compact summaries that lack fields like .data
+                const salesRaw = fullToolResults["get_sales_analytics"];
+                const forecastRaw = fullToolResults["forecast_demand"];
+
+                if (salesRaw && forecastRaw) {
+                  try {
+                    const salesData = typeof salesRaw === "string" ? JSON.parse(salesRaw) : salesRaw;
+                    const forecastData = typeof forecastRaw === "string" ? JSON.parse(forecastRaw) : forecastRaw;
+
+                    console.error(`🔍 Comparison debug: sales.analysis_type=${salesData.analysis_type}, forecast.metadata.product=${forecastData.metadata?.product}, has salesData.data=${!!salesData.data}, has forecastData.summary=${!!forecastData.summary}, has forecastData.product_summaries=${!!forecastData.product_summaries}`);
+
+                    const isSalesTrend = salesData.analysis_type === "trend";
+                    const isSingleForecast = forecastData.daily_forecast || forecastData.daily_forecast_sample;
+                    const productName = forecastData.metadata?.product || forecastData.summary?.product || "Product";
+
+                    let comparisonConfig = null;
+
+                    if (isSalesTrend && isSingleForecast) {
+                      // ─── Case 1: Both have time series → line chart overlay ───
+                      comparisonConfig = {
+                        chart_type: "line",
+                        title: `📈 ${productName}: Past Sales vs Forecast`,
+                        sources: [
+                          { source_tool: "get_sales_analytics", x_field: "period", y_field: "quantity", label: "Past Sales (Actual)", data_path: "data" },
+                          { source_tool: "forecast_demand", x_field: "date", y_field: "predicted_quantity", label: "Future Forecast", data_path: "daily_forecast" },
+                        ],
+                      };
+                    } else {
+                      // ─── Case 2: Non-trend sales data → bar chart with totals ───
+                      // Extract total quantity from whatever sales format we got
+                      let salesTotal = 0;
+                      const salesInner = salesData.data;
+                      if (salesInner && typeof salesInner === "object" && !Array.isArray(salesInner)) {
+                        // overview format: { total_quantity, total_revenue, ... }
+                        salesTotal = salesInner.total_quantity || 0;
+                      } else if (Array.isArray(salesInner)) {
+                        // by_product/by_channel: find matching product or sum all
+                        const match = salesInner.find(p => p.product === productName);
+                        salesTotal = match ? (match.quantity || match.total_quantity || 0)
+                          : salesInner.reduce((sum, p) => sum + (p.quantity || p.total_quantity || 0), 0);
+                      }
+
+                      // Extract forecast total
+                      let forecastTotal = 0;
+                      if (forecastData.summary) {
+                        forecastTotal = forecastData.summary.total_predicted_quantity || forecastData.summary.total_predicted || 0;
+                      } else if (forecastData.product_summaries) {
+                        // "all" products case – sum every product or match by name
+                        const psObj = forecastData.product_summaries;
+                        if (psObj[productName]) {
+                          forecastTotal = psObj[productName].total_predicted_quantity || 0;
+                        } else {
+                          forecastTotal = Object.values(psObj).reduce((s, p) => s + (p.total_predicted_quantity || 0), 0);
+                        }
+                      } else if (forecastData.daily_forecast) {
+                        forecastTotal = forecastData.daily_forecast.reduce((s, d) => s + (d.predicted_quantity || 0), 0);
+                      }
+
+                      if (salesTotal > 0 || forecastTotal > 0) {
+                        // Use _direct_chart to send pre-built data (no source_tool lookup needed)
+                        const directChart = {
+                          _chart_instruction: true,
+                          _direct_chart: true,
+                          chart_type: "bar",
+                          title: `📊 ${productName}: Last Month vs Next Month`,
+                          y_label: "Quantity",
+                          data: [
+                            { name: "Last Month (Actual)", value: Math.round(salesTotal) },
+                            { name: "Next Month (Forecast)", value: Math.round(forecastTotal) },
+                          ],
+                        };
+
+                        console.error(`🔄 Auto-chart: Creating DIRECT bar comparison (${salesTotal} vs ${forecastTotal})`);
+                        sendEvent({ type: "tool_start", tool: "create_chart", message: "📊 Creating comparison chart..." });
+                        sendEvent({
+                          type: "tool_end",
+                          tool: "create_chart",
+                          message: "📊 Comparison chart ✅",
+                          data: JSON.stringify(directChart),
+                        });
+                        chartedTools.add("get_sales_analytics");
+                        chartedTools.add("forecast_demand");
+                      }
+                    }
+
+                    // Send multi-source comparison (line chart case)
+                    if (comparisonConfig) {
+                      console.error(`🔄 Auto-chart: Creating COMPARISON line chart for sales + forecast`);
+                      sendEvent({ type: "tool_start", tool: "create_chart", message: "📊 Creating comparison chart..." });
+                      try {
+                        const chartResult = await chartTool.invoke(comparisonConfig);
+                        sendEvent({
+                          type: "tool_end",
+                          tool: "create_chart",
+                          message: "📊 Comparison chart ✅",
+                          data: typeof chartResult === "string" ? chartResult : JSON.stringify(chartResult),
+                        });
+                        chartedTools.add("get_sales_analytics");
+                        chartedTools.add("forecast_demand");
+                      } catch (err) {
+                        console.error(`❌ Auto-chart comparison error:`, err.message);
+                        sendEvent({ type: "tool_end", tool: "create_chart", message: "📊 Chart skipped" });
+                      }
+                    }
+                  } catch (err) {
+                    console.error(`❌ Auto-chart comparison parse error:`, err.message);
                   }
-                } catch {
-                  return null;
                 }
               }
 
-              // Find the raw tool results from the SSE events we already sent
-              // (We need the actual data to pick the right chart config)
-              const chartTool = tools.find((t) => t.name === "create_chart");
-              console.error(`🔍 Auto-chart: chartTool found = ${!!chartTool}`);
-              if (chartTool) {
+              // ═══════════════════════════════════════════════════════
+              // ONLY if LLM skipped create_chart entirely:
+              // Create individual charts for remaining tools
+              // ═══════════════════════════════════════════════════════
+              if (!chartCalled) {
+                console.error(`🔄 Auto-chart: LLM skipped create_chart for ${dataToolsCalled.join(", ")}. Injecting individual charts...`);
                 for (const dataToolName of dataToolsCalled) {
-                  // Find the ToolMessage in the messages array.
-                  // NOTE: We check for `tool_call_id` (a ToolMessage-only property)
-                  // instead of `constructor.name` which can be mangled by bundlers.
+                  if (chartedTools.has(dataToolName)) continue;
+
                   const toolMsg = messages.find(
                     (m) => m.name === dataToolName && m.tool_call_id !== undefined
                   );
-                  console.error(`🔍 Auto-chart: toolMsg for "${dataToolName}" found = ${!!toolMsg}, content length = ${toolMsg?.content?.length || 0}`);
                   const config = getAutoChartConfig(dataToolName, toolMsg?.content || "{}");
-                  console.error(`🔍 Auto-chart: config for "${dataToolName}" =`, config ? JSON.stringify(config).slice(0, 120) : "null");
                   if (config) {
                     const chartArgs = { source_tool: dataToolName, ...config };
                     sendEvent({ type: "tool_start", tool: "create_chart", message: "📊 Creating chart..." });
                     try {
                       const chartResult = await chartTool.invoke(chartArgs);
-                      console.error(`✅ Auto-chart: chartResult for "${dataToolName}" =`, typeof chartResult, String(chartResult).slice(0, 120));
                       sendEvent({
                         type: "tool_end",
                         tool: "create_chart",
@@ -889,12 +994,7 @@ export function runAgentStreaming(userMessage, sessionId) {
                       });
                     } catch (err) {
                       console.error(`❌ Auto-chart error for ${dataToolName}:`, err.message);
-                      // Send tool_end with error so tool_start isn't orphaned
-                      sendEvent({
-                        type: "tool_end",
-                        tool: "create_chart",
-                        message: "📊 Chart skipped",
-                      });
+                      sendEvent({ type: "tool_end", tool: "create_chart", message: "📊 Chart skipped" });
                     }
                   }
                 }
@@ -1030,6 +1130,7 @@ export function runAgentStreaming(userMessage, sessionId) {
              *    while still giving the frontend everything it needs.
              */
             const fullResult = typeof result === "string" ? result : JSON.stringify(result);
+            fullToolResults[toolCall.name] = fullResult; // Store FULL data for auto-chart comparison
             const compactResult = summarizeToolResult(toolCall.name, fullResult);
 
             messages.push(
