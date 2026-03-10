@@ -598,7 +598,7 @@ function summarizeToolResult(toolName, fullResult) {
             metadata: data.metadata,
             product_summaries: data.product_summaries,
             combined_profit: data.combined_profit,
-            _chart_hint: `Call create_chart(source_tool="forecast_demand", chart_type="bar", x_field="product", y_field="total_predicted_quantity", data_path="product_summaries") to visualize.`,
+            _action_required: `YOU MUST NOW call the create_chart tool with these exact parameters: source_tool="forecast_demand", chart_type="bar", title="🔮 Demand Forecast — All Products", x_field="product", y_field="total_predicted_quantity", data_path="product_summaries". Do NOT describe chart instructions to the user — call the tool.`,
           };
           return JSON.stringify(summary);
         }
@@ -611,9 +611,7 @@ function summarizeToolResult(toolName, fullResult) {
             ...(data.daily_forecast?.slice(0, 2) || []),
             ...(data.daily_forecast?.slice(-1) || []),
           ],
-          _chart_hint: `Full daily_forecast has ${data.daily_forecast?.length || 0} rows. Fields: ${
-            data.daily_forecast?.[0] ? Object.keys(data.daily_forecast[0]).join(", ") : "N/A"
-          }. Call create_chart(source_tool="forecast_demand", chart_type="line", x_field="date", y_field="predicted_quantity", data_path="daily_forecast") to visualize.`,
+          _action_required: `YOU MUST NOW call the create_chart tool with these exact parameters: source_tool="forecast_demand", chart_type="line", title="🔮 Demand Forecast", x_field="date", y_field="predicted_quantity", data_path="daily_forecast". Do NOT describe chart instructions to the user — call the tool.`,
         };
         return JSON.stringify(summary);
       }
@@ -626,8 +624,8 @@ function summarizeToolResult(toolName, fullResult) {
           period: data.period,
           data_sample: sample,
           total_rows: Array.isArray(innerData) ? innerData.length : 1,
-          _chart_hint: Array.isArray(innerData) && innerData[0]
-            ? `Fields: ${Object.keys(innerData[0]).join(", ")}. Call create_chart(source_tool="get_sales_analytics", data_path="data") to visualize.`
+          _action_required: Array.isArray(innerData) && innerData[0]
+            ? `YOU MUST NOW call the create_chart tool with: source_tool="get_sales_analytics", chart_type="bar", title="📊 Sales Analytics", x_field="${Object.keys(innerData[0])[0]}", y_field="${Object.keys(innerData[0]).find(k => k.includes('revenue') || k.includes('quantity') || k.includes('total')) || Object.keys(innerData[0])[1]}", data_path="data". Do NOT describe chart instructions to the user — call the tool.`
             : "",
         };
         return JSON.stringify(summary);
@@ -640,8 +638,8 @@ function summarizeToolResult(toolName, fullResult) {
           totals: data.totals,
           insights: data.insights,
           product_breakdown: data.product_breakdown,
-          _chart_hint: data.product_breakdown
-            ? `Call create_chart(source_tool="calculate_profit", chart_type="bar", x_field="product", y_field="gross_profit", data_path="product_breakdown") to visualize.`
+          _action_required: data.product_breakdown
+            ? `YOU MUST NOW call the create_chart tool with these exact parameters: source_tool="calculate_profit", chart_type="bar", title="💰 Profit by Product", x_field="product", y_field="gross_profit", data_path="product_breakdown". Do NOT describe chart instructions to the user — call the tool.`
             : "",
         };
         // Strip trend data if present (can be huge)
@@ -770,24 +768,140 @@ export function runAgentStreaming(userMessage, sessionId) {
 
         let fullText = "";
         let lastToolSignature = ""; // Track duplicate tool calls
+        const calledTools = []; // Track which tools were called for auto-chart fallback
 
         // ── THE AGENT LOOP (same logic, but with events) ──
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
           const response = await llmWithTools.invoke(messages);
 
           if (!response.tool_calls || response.tool_calls.length === 0) {
-            // ── FINAL RESPONSE — Stream it word by word ──
+            // ── AUTO-CHART FALLBACK ──
             /**
-             * 🎓 WHY SPLIT INTO WORDS?
-             *    The LLM returns the full text at once (since tool
-             *    calling doesn't support token-level streaming easily).
-             *    We split it into words and send them with tiny delays
-             *    to create a natural typing effect.
-             *
-             *    Real token streaming (like ChatGPT) streams from the
-             *    LLM API itself. Our approach simulates it — the visual
-             *    effect is the same for the user.
+             * 🎓 WHY AUTO-CHART?
+             *    Some LLMs (especially Cohere) tend to generate text
+             *    instead of calling create_chart after data tools.
+             *    We detect this and auto-inject chart calls so the
+             *    user always gets visualizations with data responses.
              */
+            const dataToolsCalled = calledTools.filter(
+              (t) => t !== "create_chart" && t !== "check_inventory" && t !== "get_upcoming_festivals"
+            );
+            const chartCalled = calledTools.includes("create_chart");
+
+            if (dataToolsCalled.length > 0 && !chartCalled) {
+              console.error(`🔄 Auto-chart: LLM skipped create_chart for ${dataToolsCalled.join(", ")}. Injecting chart calls...`);
+
+              /**
+               * 🎓 AUTO-CHART CONFIG — Smart defaults per tool
+               *
+               *    Each tool can return different data shapes depending
+               *    on the query (single product vs all, trend vs by_product, etc.).
+               *    We provide a config FUNCTION that inspects the actual tool
+               *    output to pick the right chart type, fields, and data path.
+               *
+               *    ⚠️ IMPORTANT: `title` is REQUIRED by the create_chart MCP tool schema.
+               *       Missing it causes a silent Zod validation error!
+               */
+              function getAutoChartConfig(toolName, toolResult) {
+                try {
+                  const data = typeof toolResult === "string" ? JSON.parse(toolResult) : toolResult;
+
+                  // NOTE: toolResult may be the SUMMARIZED version (from summarizeToolResult)
+                  // which uses different field names:
+                  //   - forecast_demand: daily_forecast_sample (not daily_forecast)
+                  //   - get_sales_analytics: data_sample (not data), but analysis_type is preserved
+                  //   - calculate_profit: product_breakdown is preserved as-is
+
+                  switch (toolName) {
+                    case "forecast_demand":
+                      // Multi-product: has product_summaries array
+                      if (data.product_summaries) {
+                        return { title: "🔮 Demand Forecast — All Products", chart_type: "bar", x_field: "product", y_field: "total_predicted_quantity", data_path: "product_summaries" };
+                      }
+                      // Single product: detect from summary/metadata or daily_forecast_sample
+                      if (data.daily_forecast_sample || data.daily_forecast || data.summary) {
+                        const productName = data.metadata?.product || data.summary?.product || "Forecast";
+                        return { title: `🔮 Demand Forecast — ${productName}`, chart_type: "line", x_field: "date", y_field: "predicted_quantity", data_path: "daily_forecast" };
+                      }
+                      return null;
+
+                    case "get_sales_analytics":
+                      // analysis_type is always preserved in both full and summarized versions
+                      if (data.analysis_type === "trend") {
+                        return { title: "📈 Sales Trend", chart_type: "line", x_field: "period", y_field: "revenue", data_path: "data" };
+                      }
+                      if (data.analysis_type === "by_product") {
+                        return { title: "📊 Sales by Product", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
+                      }
+                      if (data.analysis_type === "by_channel") {
+                        return { title: "📊 Sales by Channel", chart_type: "pie", x_field: "channel", y_field: "revenue", data_path: "data" };
+                      }
+                      if (data.analysis_type === "top_sellers") {
+                        return { title: "🏆 Top Sellers", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data.by_revenue" };
+                      }
+                      // Fallback: default to bar chart
+                      if (data.analysis_type) {
+                        return { title: "📊 Sales Analytics", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
+                      }
+                      return null;
+
+                    case "calculate_profit":
+                      // product_breakdown is preserved in both full and summarized versions
+                      if (data.product_breakdown && Array.isArray(data.product_breakdown)) {
+                        return { title: "💰 Profit by Product", chart_type: "bar", x_field: "product", y_field: "gross_profit", data_path: "product_breakdown" };
+                      }
+                      return null;
+
+                    default:
+                      return null;
+                  }
+                } catch {
+                  return null;
+                }
+              }
+
+              // Find the raw tool results from the SSE events we already sent
+              // (We need the actual data to pick the right chart config)
+              const chartTool = tools.find((t) => t.name === "create_chart");
+              console.error(`🔍 Auto-chart: chartTool found = ${!!chartTool}`);
+              if (chartTool) {
+                for (const dataToolName of dataToolsCalled) {
+                  // Find the ToolMessage in the messages array.
+                  // NOTE: We check for `tool_call_id` (a ToolMessage-only property)
+                  // instead of `constructor.name` which can be mangled by bundlers.
+                  const toolMsg = messages.find(
+                    (m) => m.name === dataToolName && m.tool_call_id !== undefined
+                  );
+                  console.error(`🔍 Auto-chart: toolMsg for "${dataToolName}" found = ${!!toolMsg}, content length = ${toolMsg?.content?.length || 0}`);
+                  const config = getAutoChartConfig(dataToolName, toolMsg?.content || "{}");
+                  console.error(`🔍 Auto-chart: config for "${dataToolName}" =`, config ? JSON.stringify(config).slice(0, 120) : "null");
+                  if (config) {
+                    const chartArgs = { source_tool: dataToolName, ...config };
+                    sendEvent({ type: "tool_start", tool: "create_chart", message: "📊 Creating chart..." });
+                    try {
+                      const chartResult = await chartTool.invoke(chartArgs);
+                      console.error(`✅ Auto-chart: chartResult for "${dataToolName}" =`, typeof chartResult, String(chartResult).slice(0, 120));
+                      sendEvent({
+                        type: "tool_end",
+                        tool: "create_chart",
+                        message: "📊 Creating chart ✅",
+                        data: typeof chartResult === "string" ? chartResult : JSON.stringify(chartResult),
+                      });
+                    } catch (err) {
+                      console.error(`❌ Auto-chart error for ${dataToolName}:`, err.message);
+                      // Send tool_end with error so tool_start isn't orphaned
+                      sendEvent({
+                        type: "tool_end",
+                        tool: "create_chart",
+                        message: "📊 Chart skipped",
+                      });
+                    }
+                  }
+                }
+              }
+            }
+
+            // ── FINAL RESPONSE — Stream it word by word ──
             fullText = response.content;
 
             // Split into small chunks (words) for typing effect
@@ -896,6 +1010,8 @@ export function runAgentStreaming(userMessage, sessionId) {
               message: `${friendlyName} ✅`,
               data: typeof result === "string" ? result : JSON.stringify(result),
             });
+
+            calledTools.push(toolCall.name);
 
             /**
              * 🎓 TOKEN-SAVING: SUMMARIZE TOOL RESULTS FOR THE LLM

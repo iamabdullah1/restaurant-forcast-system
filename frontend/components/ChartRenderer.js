@@ -468,7 +468,13 @@ function PieChartComponent({ data, title }) {
  */
 export default function ChartRenderer({ toolData }) {
   const charts = useMemo(() => {
-    if (!toolData || !Array.isArray(toolData) || toolData.length === 0) return [];
+    console.log("[ChartRenderer] toolData received:", toolData);
+    if (!toolData || !Array.isArray(toolData) || toolData.length === 0) {
+      console.log("[ChartRenderer] No toolData, returning empty");
+      return [];
+    }
+
+    console.log("[ChartRenderer] Processing", toolData.length, "tool entries:", toolData.map(t => t.tool));
 
     const results = [];
 
@@ -505,7 +511,9 @@ export default function ChartRenderer({ toolData }) {
     return results;
   }, [toolData]);
 
-  if (charts.length === 0) return null;
+  if (!toolData || toolData.length === 0 || charts.length === 0) {
+    return null;
+  }
 
   return (
     <div className="mt-4 space-y-4">
