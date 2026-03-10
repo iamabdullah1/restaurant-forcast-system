@@ -372,21 +372,37 @@ export default function ChatWindow() {
        */}
       {error && (
         <div className="animate-fade-in border-t border-[--error]/30 bg-[--error]/10 px-6 py-3">
-          <div className="mx-auto flex max-w-3xl items-center gap-2 text-sm text-[--error]">
-            <svg
-              className="h-4 w-4 shrink-0"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
-              />
-            </svg>
-            {error}
+          <div className="mx-auto max-w-3xl text-sm text-[--error]">
+            {/* ── Error header with icon ── */}
+            <div className="flex items-center gap-2">
+              <svg
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
+                />
+              </svg>
+              <span className="font-medium">
+                {typeof error === "string" ? error : error.message}
+              </span>
+            </div>
+            {/* ── Technical details (collapsed) ── */}
+            {typeof error === "object" && error.details && (
+              <details className="mt-1 ml-6">
+                <summary className="cursor-pointer text-xs opacity-60 hover:opacity-100">
+                  Technical details
+                </summary>
+                <p className="mt-1 text-xs opacity-50 font-mono break-all">
+                  {error.details}
+                </p>
+              </details>
+            )}
           </div>
         </div>
       )}

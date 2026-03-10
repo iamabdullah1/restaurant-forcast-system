@@ -410,6 +410,182 @@ export async function runAgent(userMessage, sessionId) {
  * @param {string} fullResult - The full JSON string
  * @returns {string} - Compact JSON string safe for LLM context
  */
+
+// ─────────────────────────────────────────────────────────
+// 📛 SMART ERROR PARSER
+// ─────────────────────────────────────────────────────────
+/**
+ * 🎓 WHY THIS EXISTS:
+ *    When an LLM API call fails, the raw error is a messy
+ *    HTTP response like:
+ *      "413 {"error":{"message":"Request too large..."}}"
+ *    or a network error like "ECONNREFUSED" or a timeout.
+ *
+ *    Users don't want to see that. They want:
+ *      "⏳ Rate limit exceeded — wait 30s and try again"
+ *
+ *    This function inspects the raw error and returns:
+ *    - errorType:        machine-readable category
+ *    - userMessage:      human-friendly message for the UI
+ *    - technicalDetails: raw error for debugging (collapsed)
+ *
+ * @param {Error} error - The caught error object
+ * @returns {{ errorType: string, userMessage: string, technicalDetails: string }}
+ */
+function parseApiError(error) {
+  const raw = error.message || String(error);
+  const lower = raw.toLowerCase();
+
+  // ── 1. Rate Limit — 429 Too Many Requests ──
+  if (
+    lower.includes("429") ||
+    lower.includes("rate_limit") ||
+    lower.includes("rate limit") ||
+    lower.includes("too many requests")
+  ) {
+    // Try to extract retry-after time if present
+    const retryMatch = raw.match(/try again in (\d+\.?\d*)(m?s)/i);
+    const wait = retryMatch
+      ? `Wait ${retryMatch[1]}${retryMatch[2]} and try again.`
+      : "Please wait a moment and try again.";
+    return {
+      errorType: "rate_limit",
+      userMessage: `⏳ Rate limit exceeded — ${wait}`,
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 2. Request Too Large — 413 (TPM exceeded) ──
+  if (
+    lower.includes("413") ||
+    lower.includes("request too large") ||
+    lower.includes("tokens per minute") ||
+    lower.includes("tpm")
+  ) {
+    return {
+      errorType: "tpm_exceeded",
+      userMessage:
+        "📦 Request too large — the response exceeded the model's token-per-minute limit. Try a simpler question or wait a minute.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 3. Quota / Daily Limit Exhausted ──
+  if (
+    lower.includes("quota") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("billing") ||
+    lower.includes("credit") ||
+    lower.includes("daily limit") ||
+    lower.includes("exceeded your current")
+  ) {
+    return {
+      errorType: "quota_exhausted",
+      userMessage:
+        "💳 API quota exhausted — the daily free-tier limit has been reached. Try again tomorrow or upgrade the API plan.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 4. Invalid API Key ──
+  if (
+    lower.includes("invalid api key") ||
+    lower.includes("invalid_api_key") ||
+    lower.includes("401") ||
+    lower.includes("unauthorized") ||
+    lower.includes("authentication")
+  ) {
+    return {
+      errorType: "auth_error",
+      userMessage:
+        "🔑 Authentication failed — the API key is invalid or expired. Check your .env configuration.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 5. Model Unavailable / Overloaded ──
+  if (
+    lower.includes("model_not_found") ||
+    lower.includes("model not found") ||
+    lower.includes("overloaded") ||
+    lower.includes("503") ||
+    lower.includes("service unavailable") ||
+    lower.includes("model_decommissioned") ||
+    lower.includes("currently loading")
+  ) {
+    return {
+      errorType: "model_unavailable",
+      userMessage:
+        "🤖 Model unavailable — the AI model is overloaded or not found. Try again in a few minutes.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 6. Network / Connection Errors ──
+  if (
+    lower.includes("econnrefused") ||
+    lower.includes("econnreset") ||
+    lower.includes("enotfound") ||
+    lower.includes("timeout") ||
+    lower.includes("etimedout") ||
+    lower.includes("network") ||
+    lower.includes("fetch failed")
+  ) {
+    return {
+      errorType: "network_error",
+      userMessage:
+        "🌐 Network error — could not reach the AI service. Check your internet connection and try again.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 7. MCP Server / Tool Errors ──
+  if (
+    lower.includes("mcp") ||
+    lower.includes("tool execution") ||
+    lower.includes("mongodb") ||
+    lower.includes("mongo")
+  ) {
+    return {
+      errorType: "mcp_error",
+      userMessage:
+        "🔧 Data service error — the MCP server or database encountered an issue. Make sure the MCP server is running.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 8. Context Length Exceeded ──
+  if (
+    lower.includes("context length") ||
+    lower.includes("maximum context") ||
+    lower.includes("too long")
+  ) {
+    return {
+      errorType: "context_overflow",
+      userMessage:
+        "📏 Conversation too long — the message history exceeds the model's context window. Start a new conversation.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── 9. Server Error (500) ──
+  if (lower.includes("500") || lower.includes("internal server error")) {
+    return {
+      errorType: "server_error",
+      userMessage:
+        "🔥 Server error — the AI service returned an internal error. This is usually temporary, try again.",
+      technicalDetails: raw,
+    };
+  }
+
+  // ── Fallback: Unknown Error ──
+  return {
+    errorType: "unknown",
+    userMessage: `❌ Something went wrong — ${raw.slice(0, 120)}${raw.length > 120 ? "…" : ""}`,
+    technicalDetails: raw,
+  };
+}
+
 function summarizeToolResult(toolName, fullResult) {
   try {
     const data = JSON.parse(fullResult);
@@ -754,11 +930,26 @@ export function runAgentStreaming(userMessage, sessionId) {
       } catch (error) {
         // Log the FULL error server-side so we can debug
         console.error("❌ runAgentStreaming error:", error);
-        // Send error event to the client
+
+        /**
+         * 🎓 SMART ERROR PARSING:
+         *    LLM API errors come in many formats. We parse the
+         *    raw error to extract a USER-FRIENDLY message that
+         *    tells the user WHAT happened and WHAT to do.
+         *
+         *    Common errors:
+         *    - Rate limit (TPM/RPM exceeded)
+         *    - Daily quota exhausted
+         *    - Model overloaded / unavailable
+         *    - Network / timeout errors
+         *    - Invalid API key
+         */
+        const parsed = parseApiError(error);
         sendEvent({
           type: "error",
-          message: "Something went wrong. Please try again.",
-          details: error.message,
+          message: parsed.userMessage,
+          details: parsed.technicalDetails,
+          errorType: parsed.errorType,
         });
         controller.close();
       }

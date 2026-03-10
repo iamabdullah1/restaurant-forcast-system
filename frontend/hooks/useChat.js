@@ -487,9 +487,16 @@ export function useChat() {
               case "error":
                 /**
                  * 🎓 ERROR — Something went wrong on the server
-                 *    Display the error and stop streaming.
+                 *    Display the error with the REAL reason, not a
+                 *    generic message. The agent.js parseApiError()
+                 *    function extracts user-friendly messages from
+                 *    raw API errors (rate limits, quotas, etc.).
                  */
-                setError(data.message || "Something went wrong.");
+                setError({
+                  message: data.message || "Something went wrong.",
+                  details: data.details || null,
+                  errorType: data.errorType || "unknown",
+                });
                 setToolStatuses([]);
                 setIsStreaming(false);
                 break;
