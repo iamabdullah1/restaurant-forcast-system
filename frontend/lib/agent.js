@@ -592,7 +592,17 @@ function summarizeToolResult(toolName, fullResult) {
 
     switch (toolName) {
       case "forecast_demand": {
-        // Keep metadata + summary + profit_projection + first 2 days + field names hint
+        // Handle "all products" response (has product_summaries + combined_profit)
+        if (data.product_summaries) {
+          const summary = {
+            metadata: data.metadata,
+            product_summaries: data.product_summaries,
+            combined_profit: data.combined_profit,
+            _chart_hint: `Call create_chart(source_tool="forecast_demand", chart_type="bar", x_field="product", y_field="total_predicted_quantity", data_path="product_summaries") to visualize.`,
+          };
+          return JSON.stringify(summary);
+        }
+        // Handle single-product response (has summary + daily_forecast)
         const summary = {
           metadata: data.metadata,
           summary: data.summary,
