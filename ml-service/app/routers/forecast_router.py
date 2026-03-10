@@ -63,7 +63,7 @@ model_router = APIRouter(prefix="/model", tags=["Model Management"])
 )
 async def get_product_forecast(
     product: str,
-    days: int = Query(default=30, ge=1, le=90, description="Number of days to forecast (1-90)"),
+    days: int = Query(default=30, ge=1, le=365, description="Number of days to forecast (1-365)"),
 ):
     """
     GET /forecast/{product}?days=30
@@ -72,7 +72,7 @@ async def get_product_forecast(
     Returns: 30 days of predicted Burger demand with confidence intervals
 
     The 'product' parameter comes from the URL path.
-    The 'days' parameter is optional (default=30), validated to be 1-90.
+    The 'days' parameter is optional (default=30), validated to be 1-365.
 
     Query() is FastAPI's way to add validation + description to query params.
     ge=1 means "greater than or equal to 1", le=90 means "less than or equal to 90".
@@ -103,7 +103,7 @@ async def get_product_forecast(
     "Useful for daily briefings and inventory planning.",
 )
 async def get_all_forecasts(
-    days: int = Query(default=30, ge=1, le=90, description="Number of days to forecast (1-90)"),
+    days: int = Query(default=30, ge=1, le=365, description="Number of days to forecast (1-365)"),
 ):
     """
     GET /forecast/?days=30
@@ -131,7 +131,7 @@ async def get_all_forecasts(
 )
 async def get_product_profit(
     product: str,
-    days: int = Query(default=30, ge=1, le=90, description="Number of days to project (1-90)"),
+    days: int = Query(default=30, ge=1, le=365, description="Number of days to project (1-365)"),
 ):
     """
     GET /profit/{product}?days=30
@@ -167,7 +167,7 @@ async def get_product_profit(
     "product ranking by profit contribution, and blended margin.",
 )
 async def get_all_profit(
-    days: int = Query(default=30, ge=1, le=90, description="Number of days to project (1-90)"),
+    days: int = Query(default=30, ge=1, le=365, description="Number of days to project (1-365)"),
 ):
     """
     GET /profit/?days=30

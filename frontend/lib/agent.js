@@ -76,7 +76,7 @@
  *    own docs now recommend this approach.
  */
 
-import { ChatGroq } from "@langchain/groq";
+import { ChatCohere } from "@langchain/cohere";
 import { ToolMessage } from "@langchain/core/messages";
 import { getMCPTools } from "./mcp-client.js";
 import { chatPrompt } from "./prompts.js";
@@ -84,31 +84,31 @@ import { getChatHistory, addToMemory } from "./memory.js";
 
 // ─── CREATE THE LLM ─────────────────────────────────────
 /**
- * 🎓 ChatGroq — LangChain's Wrapper for Groq
+ * 🎓 ChatGoogleGenerativeAI — LangChain's Wrapper for Gemini
  *
- *    Groq runs open-source LLMs on custom LPU (Language Processing Unit)
- *    hardware — making them BLAZING FAST (often 10x faster than GPU APIs).
+ *    Google's Gemini 2.0 Flash is a high-performance model with
+ *    Excellent free-tier limits + top-tier tool calling.
  *
- *    We use Llama 3.3 70B Versatile — an excellent open-source model from Meta
- *    that rivals GPT-4 on many benchmarks, especially tool calling.
+ *    Why Cohere?
+ *    ┌─────────────┬────────────────┬──────────────────┐
+ *    │             │ Groq (old)     │ Cohere (new)     │
+ *    ├─────────────┼────────────────┼──────────────────┤
+ *    │ TPM         │ 6,000 💀       │ ~100K+ 🚀        │
+ *    │ RPM         │ 30             │ 20               │
+ *    │ Monthly Req │ 14,400/day     │ 1,000/month      │
+ *    │ Intelligence│ Low (8B)       │ Very High (R+)   │
+ *    │ Tool Call   │ Decent         │ Best-in-class    │
+ *    └─────────────┴────────────────┴──────────────────┘
  *
  *    Parameters:
- *    - model: "llama-3.3-70b-versatile" — Meta's best open-source model
- *      (Options: "llama-3.3-70b-versatile" = best quality,
- *       "llama-3.1-8b-instant" = faster but less capable)
- *
- *    - apiKey: from .env → GROQ_API_KEY
- *      Free API key from console.groq.com
- *      30 requests/min, 14,400 requests/day — very generous!
- *
- *    - temperature: 0.3
- *      Controls randomness. 0 = deterministic, 1 = creative.
- *      0.3 = mostly consistent but slightly varied responses.
- *      For a data assistant, we want CONSISTENCY (low temperature).
+ *    - model: "command-r-plus" — Cohere's flagship, best tool-use model
+ *    - apiKey: from .env → COHERE_API_KEY
+ *      Free key from https://dashboard.cohere.com/api-keys
+ *    - temperature: 0.3 — low for consistency in data responses
  *
  * 🎓 WHY LAZY INITIALIZATION?
  *    We create the LLM inside a function (not at module level)
- *    because process.env.GROQ_API_KEY might not be available
+ *    because process.env.COHERE_API_KEY might not be available
  *    when the module first loads in Next.js. By creating it
  *    lazily (on first use), we ensure the env var is loaded.
  */
@@ -116,9 +116,9 @@ let llmInstance = null;
 
 function getLLM() {
   if (!llmInstance) {
-    llmInstance = new ChatGroq({
-      model: "llama-3.1-8b-instant",
-      apiKey: process.env.GROQ_API_KEY,
+    llmInstance = new ChatCohere({
+      model: "command-a-03-2025",
+      apiKey: process.env.COHERE_API_KEY,
       temperature: 0.3,
     });
   }

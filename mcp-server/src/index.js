@@ -54,9 +54,9 @@ server.tool(
     days_ahead: z
       .number()
       .min(1)
-      .max(90)
+      .max(365)
       .default(30)
-      .describe("Number of days to forecast (1-90, default 30)"),
+      .describe("Number of days to forecast (1-365, default 30)"),
   },
   handleForecastDemand
 );
