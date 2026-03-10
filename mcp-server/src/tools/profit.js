@@ -31,6 +31,7 @@
 
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
+import { buildSmartDateFilter } from "./dateHelper.js";
 
 // ─── HELPER: Get cost map ───────────────────────────────
 /**
@@ -221,10 +222,9 @@ export async function handleCalculateProfit({
 }) {
   try {
     // ── Build date filter ──────────────────────────────
-    const dateFilter =
-      days && days > 0
-        ? { date: { $gte: new Date(Date.now() - days * 24 * 60 * 60 * 1000) } }
-        : {};
+    // Uses the max date in sales collection as reference (not today's date)
+    // so "last 30 days" means last 30 days of ACTUAL data
+    const dateFilter = await buildSmartDateFilter(days);
 
     // Add product filter if specific product requested
     if (product && product !== "all") {

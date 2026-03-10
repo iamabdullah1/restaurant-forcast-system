@@ -24,6 +24,7 @@ import { handleCheckInventory } from "./tools/inventory.js";
 import { handleGetSalesAnalytics } from "./tools/analytics.js";
 import { handleCalculateProfit } from "./tools/profit.js";
 import { handleForecastDemand } from "./tools/forecast.js";
+import { handleCreateChart } from "./tools/chart.js";
 
 // ─── CREATE SERVER ──────────────────────────────────────
 // name + version are sent to AI clients during the MCP handshake
@@ -149,6 +150,47 @@ server.tool(
       .describe("Time grouping for trend analysis (default 'day')"),
   },
   handleGetSalesAnalytics
+);
+
+// Tool #6: Create chart — LLM decides WHAT to chart, frontend renders it
+server.tool(
+  "create_chart",
+  "Create a visual chart/graph from a previously called tool's data. " +
+    "Call this AFTER calling a data tool (like forecast_demand, calculate_profit, etc.) " +
+    "to tell the frontend to render a chart. You do NOT need to pass the data — just specify " +
+    "which tool's output to chart, the chart type, and which fields to use for axes. " +
+    "The frontend already has the raw data from the previous tool call.",
+  {
+    source_tool: z
+      .enum(["forecast_demand", "check_inventory", "calculate_profit", "get_sales_analytics", "get_upcoming_festivals"])
+      .describe("Which tool's output data to visualize"),
+    chart_type: z
+      .enum(["line", "bar", "pie"])
+      .describe("Chart type: 'line' for trends over time, 'bar' for comparing categories, 'pie' for proportions"),
+    title: z
+      .string()
+      .describe("Chart title shown to the user, e.g. '🔮 Burger Demand — Next 14 Days'"),
+    x_field: z
+      .string()
+      .describe("Field name from the tool's output to use as x-axis. e.g. 'date', 'product', 'channel', 'period'"),
+    y_field: z
+      .string()
+      .describe("Field name from the tool's output to use as y-axis. e.g. 'predicted_quantity', 'revenue', 'gross_profit', 'stock_level'"),
+    y_label: z
+      .string()
+      .optional()
+      .describe("Display label for y-axis, e.g. 'Units', 'Revenue ($)', 'Profit ($)'"),
+    data_path: z
+      .string()
+      .optional()
+      .describe(
+        "Dot-notation path to the data array inside the tool's output. " +
+          "e.g. 'daily_forecast' for forecast_demand, 'product_breakdown' for calculate_profit, " +
+          "'data' for get_sales_analytics, 'products' for check_inventory. " +
+          "If omitted, the renderer will try common paths automatically."
+      ),
+  },
+  handleCreateChart
 );
 
 // ═══════════════════════════════════════════════════════════

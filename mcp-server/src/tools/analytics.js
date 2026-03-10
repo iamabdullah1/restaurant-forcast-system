@@ -30,25 +30,24 @@
  */
 
 import Sale from "../models/Sale.js";
+import { buildSmartDateFilter } from "./dateHelper.js";
 
 // ─── HELPER: Build the date filter ──────────────────────
 /**
  * 🎓 buildDateFilter(days):
  *    Creates a MongoDB $match condition that filters sales
- *    to the last N days.
+ *    to the last N days — relative to the LATEST date in the database,
+ *    NOT today's actual date. This is critical because our sales data
+ *    may not extend to the current date.
  *
- *    Example: days=7 → only sales from the past week
+ *    Example: days=7 → last 7 days of ACTUAL sales data
  *    If days is null/0, returns empty object (no date filter = all time)
  *
  * 🎓 $gte means "greater than or equal to" — a MongoDB comparison operator.
  *    So { date: { $gte: someDate } } means "date >= someDate"
  */
-function buildDateFilter(days) {
-  if (!days || days <= 0) return {};
-
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - days);
-  return { date: { $gte: startDate } };
+async function buildDateFilter(days) {
+  return await buildSmartDateFilter(days);
 }
 
 // ─── Analysis: Overview (Total summary) ─────────────────
@@ -334,7 +333,7 @@ export async function handleGetSalesAnalytics({
   group_by = "day",
 }) {
   try {
-    const dateFilter = buildDateFilter(days);
+    const dateFilter = await buildDateFilter(days);
 
     /**
      * 🎓 Dispatcher Pattern:

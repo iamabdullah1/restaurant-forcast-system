@@ -76,7 +76,7 @@
  *    own docs now recommend this approach.
  */
 
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { ChatGroq } from "@langchain/groq";
 import { ToolMessage } from "@langchain/core/messages";
 import { getMCPTools } from "./mcp-client.js";
 import { chatPrompt } from "./prompts.js";
@@ -84,29 +84,31 @@ import { getChatHistory, addToMemory } from "./memory.js";
 
 // ─── CREATE THE LLM ─────────────────────────────────────
 /**
- * 🎓 ChatGoogleGenerativeAI — LangChain's Wrapper for Gemini (Google)
+ * 🎓 ChatGroq — LangChain's Wrapper for Groq
  *
- *    ChatGoogleGenerativeAI wraps Google's Gemini API.
- *    We use Gemini 2.0 Flash — fast, free tier, excellent tool calling.
+ *    Groq runs open-source LLMs on custom LPU (Language Processing Unit)
+ *    hardware — making them BLAZING FAST (often 10x faster than GPU APIs).
+ *
+ *    We use Llama 3.3 70B Versatile — an excellent open-source model from Meta
+ *    that rivals GPT-4 on many benchmarks, especially tool calling.
  *
  *    Parameters:
- *    - model: "gemini-2.0-flash" — Google's fastest Gemini model
- *      (Options: "gemini-2.0-flash" = fast + free,
- *       "gemini-1.5-pro" = more powerful but slower)
+ *    - model: "llama-3.3-70b-versatile" — Meta's best open-source model
+ *      (Options: "llama-3.3-70b-versatile" = best quality,
+ *       "llama-3.1-8b-instant" = faster but less capable)
  *
- *    - apiKey: from .env → GOOGLE_API_KEY
- *      Free API key from aistudio.google.com
- *      15 requests/min, 1500 requests/day — plenty for us.
+ *    - apiKey: from .env → GROQ_API_KEY
+ *      Free API key from console.groq.com
+ *      30 requests/min, 14,400 requests/day — very generous!
  *
  *    - temperature: 0.3
  *      Controls randomness. 0 = deterministic, 1 = creative.
  *      0.3 = mostly consistent but slightly varied responses.
  *      For a data assistant, we want CONSISTENCY (low temperature).
- *      A creative writing bot would use 0.7–0.9.
  *
  * 🎓 WHY LAZY INITIALIZATION?
  *    We create the LLM inside a function (not at module level)
- *    because process.env.GOOGLE_API_KEY might not be available
+ *    because process.env.GROQ_API_KEY might not be available
  *    when the module first loads in Next.js. By creating it
  *    lazily (on first use), we ensure the env var is loaded.
  */
@@ -114,9 +116,9 @@ let llmInstance = null;
 
 function getLLM() {
   if (!llmInstance) {
-    llmInstance = new ChatGoogleGenerativeAI({
-      model: "gemini-2.0-flash",
-      apiKey: process.env.GOOGLE_API_KEY,
+    llmInstance = new ChatGroq({
+      model: "llama-3.1-8b-instant",
+      apiKey: process.env.GROQ_API_KEY,
       temperature: 0.3,
     });
   }
@@ -135,7 +137,7 @@ function getLLM() {
  *    "Check burger stock" → 1 tool call
  *    "Give me a full weekly review" → 4–5 tool calls
  */
-const MAX_TOOL_ITERATIONS = 10;
+const MAX_TOOL_ITERATIONS = 5;
 
 /**
  * Run the agent: take a user message, let the LLM decide which
@@ -235,6 +237,7 @@ export async function runAgent(userMessage, sessionId) {
    *
    *    Final: return "Based on the forecast, you'll need ~342 burgers."
    */
+  let lastToolSignature = ""; // Track duplicate tool calls
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     // Send all messages to the LLM
     const response = await llmWithTools.invoke(messages);
@@ -287,6 +290,30 @@ export async function runAgent(userMessage, sessionId) {
      *    Then on the next loop, the LLM sees everything and
      *    can decide what to do next.
      */
+
+    // Detect duplicate tool calls (same tool + same args twice in a row)
+    const currentSignature = JSON.stringify(
+      response.tool_calls.map((tc) => ({ name: tc.name, args: tc.args }))
+    );
+    if (currentSignature === lastToolSignature) {
+      console.error("⚠️  Duplicate tool call detected, forcing text response...");
+      messages.push(response);
+      for (const toolCall of response.tool_calls) {
+        messages.push(
+          new ToolMessage({
+            content: "Already retrieved. Please use the data above to answer the user's question now.",
+            tool_call_id: toolCall.id,
+            name: toolCall.name,
+          })
+        );
+      }
+      const forcedResponse = await llm.invoke(messages);
+      const finalText = forcedResponse.content;
+      await addToMemory(sessionId, userMessage, finalText);
+      return finalText;
+    }
+    lastToolSignature = currentSignature;
+
     messages.push(response);
 
     // Execute each tool call and collect results
@@ -337,7 +364,7 @@ export async function runAgent(userMessage, sessionId) {
        */
       messages.push(
         new ToolMessage({
-          content: typeof result === "string" ? result : JSON.stringify(result),
+          content: summarizeToolResult(toolCall.name, typeof result === "string" ? result : JSON.stringify(result)),
           tool_call_id: toolCall.id,
           name: toolCall.name,
         })
@@ -361,6 +388,101 @@ export async function runAgent(userMessage, sessionId) {
 
   await addToMemory(sessionId, userMessage, fallbackMsg);
   return fallbackMsg;
+}
+
+// ─── TOOL RESULT SUMMARIZER ─────────────────────────────
+/**
+ * 🎓 summarizeToolResult — Compact tool output for LLM context
+ *
+ *    MCP tools return HUGE JSON (14 forecast rows = ~3000 tokens).
+ *    The LLM doesn't need every row — it needs the SUMMARY to:
+ *    1. Write a good text answer for the user
+ *    2. Decide whether to call create_chart (and know the field names)
+ *
+ *    The FULL data is already sent to the frontend via SSE "tool_end".
+ *    This function creates a compact version for the LLM's context window.
+ *
+ *    Why? Groq free tier = 6,000 TPM. A 14-day forecast uses ~3000 tokens.
+ *    System prompt + tools = ~2500 tokens. 3000 + 2500 = 5500 → barely fits.
+ *    Two tool calls? 6000+ → rate limit error! 💥
+ *
+ * @param {string} toolName - Which tool produced this result
+ * @param {string} fullResult - The full JSON string
+ * @returns {string} - Compact JSON string safe for LLM context
+ */
+function summarizeToolResult(toolName, fullResult) {
+  try {
+    const data = JSON.parse(fullResult);
+
+    switch (toolName) {
+      case "forecast_demand": {
+        // Keep metadata + summary + profit_projection + first 2 days + field names hint
+        const summary = {
+          metadata: data.metadata,
+          summary: data.summary,
+          profit_projection: data.profit_projection,
+          daily_forecast_sample: [
+            ...(data.daily_forecast?.slice(0, 2) || []),
+            ...(data.daily_forecast?.slice(-1) || []),
+          ],
+          _chart_hint: `Full daily_forecast has ${data.daily_forecast?.length || 0} rows. Fields: ${
+            data.daily_forecast?.[0] ? Object.keys(data.daily_forecast[0]).join(", ") : "N/A"
+          }. Call create_chart(source_tool="forecast_demand", chart_type="line", x_field="date", y_field="predicted_quantity", data_path="daily_forecast") to visualize.`,
+        };
+        return JSON.stringify(summary);
+      }
+
+      case "get_sales_analytics": {
+        const innerData = data.data;
+        const sample = Array.isArray(innerData) ? innerData.slice(0, 3) : innerData;
+        const summary = {
+          analysis_type: data.analysis_type,
+          period: data.period,
+          data_sample: sample,
+          total_rows: Array.isArray(innerData) ? innerData.length : 1,
+          _chart_hint: Array.isArray(innerData) && innerData[0]
+            ? `Fields: ${Object.keys(innerData[0]).join(", ")}. Call create_chart(source_tool="get_sales_analytics", data_path="data") to visualize.`
+            : "",
+        };
+        return JSON.stringify(summary);
+      }
+
+      case "calculate_profit": {
+        const summary = {
+          period: data.period,
+          product_filter: data.product_filter,
+          totals: data.totals,
+          insights: data.insights,
+          product_breakdown: data.product_breakdown,
+          _chart_hint: data.product_breakdown
+            ? `Call create_chart(source_tool="calculate_profit", chart_type="bar", x_field="product", y_field="gross_profit", data_path="product_breakdown") to visualize.`
+            : "",
+        };
+        // Strip trend data if present (can be huge)
+        if (data.trend) {
+          summary.trend_rows = data.trend.length;
+        }
+        return JSON.stringify(summary);
+      }
+
+      case "check_inventory":
+      case "create_chart":
+      case "get_upcoming_festivals":
+        // These are already small, keep as-is
+        return fullResult;
+
+      default:
+        if (fullResult.length > 2000) {
+          return fullResult.slice(0, 2000) + "...(truncated)";
+        }
+        return fullResult;
+    }
+  } catch {
+    if (fullResult.length > 2000) {
+      return fullResult.slice(0, 2000) + "...(truncated)";
+    }
+    return fullResult;
+  }
 }
 
 // ─── STREAMING VERSION OF THE AGENT ─────────────────────
@@ -461,6 +583,7 @@ export function runAgentStreaming(userMessage, sessionId) {
         sendEvent({ type: "status", message: "🧠 Thinking..." });
 
         let fullText = "";
+        let lastToolSignature = ""; // Track duplicate tool calls
 
         // ── THE AGENT LOOP (same logic, but with events) ──
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
@@ -499,6 +622,45 @@ export function runAgentStreaming(userMessage, sessionId) {
           }
 
           // ── TOOL CALLS — Send status updates ──
+          /**
+           * 🎓 DUPLICATE TOOL CALL DETECTION:
+           *    Some models (especially Llama) can get stuck calling
+           *    the same tool repeatedly. We detect this by comparing
+           *    the current tool call "signature" (name + args) with
+           *    the previous one. If they match, we force the LLM to
+           *    generate a text response by re-invoking WITHOUT tools.
+           */
+          const currentSignature = JSON.stringify(
+            response.tool_calls.map((tc) => ({ name: tc.name, args: tc.args }))
+          );
+
+          if (currentSignature === lastToolSignature) {
+            console.error("⚠️  Duplicate tool call detected, forcing text response...");
+            // Re-invoke the LLM WITHOUT tools to force a text answer
+            messages.push(response);
+            for (const toolCall of response.tool_calls) {
+              messages.push(
+                new ToolMessage({
+                  content: "Already retrieved. Please use the data above to answer the user's question now.",
+                  tool_call_id: toolCall.id,
+                  name: toolCall.name,
+                })
+              );
+            }
+            const forcedResponse = await llm.invoke(messages);
+            fullText = forcedResponse.content;
+            const words = fullText.split(" ");
+            for (let w = 0; w < words.length; w++) {
+              const chunk = w === 0 ? words[w] : " " + words[w];
+              sendEvent({ type: "token", content: chunk });
+            }
+            sendEvent({ type: "done", fullText });
+            await addToMemory(sessionId, userMessage, fullText);
+            controller.close();
+            return;
+          }
+          lastToolSignature = currentSignature;
+
           messages.push(response);
 
           for (const toolCall of response.tool_calls) {
@@ -517,6 +679,7 @@ export function runAgentStreaming(userMessage, sessionId) {
               calculate_profit: "💰 Calculating profits",
               get_upcoming_festivals: "🎉 Checking festivals",
               get_sales_analytics: "📊 Analyzing sales",
+              create_chart: "📊 Creating chart",
             };
 
             const friendlyName =
@@ -545,12 +708,31 @@ export function runAgentStreaming(userMessage, sessionId) {
               type: "tool_end",
               tool: toolCall.name,
               message: `${friendlyName} ✅`,
+              data: typeof result === "string" ? result : JSON.stringify(result),
             });
+
+            /**
+             * 🎓 TOKEN-SAVING: SUMMARIZE TOOL RESULTS FOR THE LLM
+             *
+             *    The raw tool output (e.g., 14 rows of daily forecast) can be
+             *    2000-4000 tokens. The LLM doesn't need all that detail — it
+             *    just needs the SUMMARY to write a good answer and decide
+             *    whether to call create_chart.
+             *
+             *    But the FRONTEND needs the full data (for chart rendering).
+             *    So we:
+             *    1. Send FULL data → SSE "tool_end" event (above) → frontend
+             *    2. Send COMPACT summary → ToolMessage → LLM context
+             *
+             *    This keeps the LLM within token limits (Groq free tier = 6000 TPM)
+             *    while still giving the frontend everything it needs.
+             */
+            const fullResult = typeof result === "string" ? result : JSON.stringify(result);
+            const compactResult = summarizeToolResult(toolCall.name, fullResult);
 
             messages.push(
               new ToolMessage({
-                content:
-                  typeof result === "string" ? result : JSON.stringify(result),
+                content: compactResult,
                 tool_call_id: toolCall.id,
                 name: toolCall.name,
               })
@@ -570,6 +752,8 @@ export function runAgentStreaming(userMessage, sessionId) {
         await addToMemory(sessionId, userMessage, fallbackMsg);
         controller.close();
       } catch (error) {
+        // Log the FULL error server-side so we can debug
+        console.error("❌ runAgentStreaming error:", error);
         // Send error event to the client
         sendEvent({
           type: "error",

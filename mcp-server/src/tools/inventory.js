@@ -28,6 +28,7 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
 import Inventory from "../models/Inventory.js";
+import { getEffectiveNow } from "./dateHelper.js";
 
 // ─── HELPER: Calculate average daily consumption ────────
 /**
@@ -50,7 +51,8 @@ import Inventory from "../models/Inventory.js";
  * @returns {number} average units consumed per day
  */
 async function getAvgDailyConsumption(productName, lookbackDays = 30) {
-  const startDate = new Date();
+  const effectiveNow = await getEffectiveNow();
+  const startDate = new Date(effectiveNow);
   startDate.setDate(startDate.getDate() - lookbackDays);
 
   /**

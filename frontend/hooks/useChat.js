@@ -420,7 +420,7 @@ export function useChat() {
                 /**
                  * 🎓 TOOL_END — A tool finished executing
                  *    Update the tool's status to show ✅
-                 *    We replace the message (e.g., "...checking" → "...✅")
+                 *    Also capture tool result data for chart rendering.
                  */
                 setToolStatuses((prev) =>
                   prev.map((ts) =>
@@ -429,6 +429,22 @@ export function useChat() {
                       : ts
                   )
                 );
+                // Store tool result data on the AI message for chart rendering
+                if (data.data) {
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === aiMessageId
+                        ? {
+                            ...msg,
+                            toolData: [
+                              ...(msg.toolData || []),
+                              { tool: data.tool, data: data.data },
+                            ],
+                          }
+                        : msg
+                    )
+                  );
+                }
                 break;
 
               case "status":

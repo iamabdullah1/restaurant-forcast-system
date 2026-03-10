@@ -57,7 +57,7 @@
  *    5. Next question → repeat from step 1 with longer history
  */
 
-import { ChatMessageHistory } from "@langchain/core/chat_history";
+import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 
 // ─── SESSION STORE ──────────────────────────────────────
@@ -116,7 +116,7 @@ const sessionStore = new Map();
  */
 export function getSessionHistory(sessionId) {
   if (!sessionStore.has(sessionId)) {
-    sessionStore.set(sessionId, new ChatMessageHistory());
+    sessionStore.set(sessionId, new InMemoryChatMessageHistory());
   }
   return sessionStore.get(sessionId);
 }

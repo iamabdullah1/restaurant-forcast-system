@@ -351,7 +351,9 @@ function findPeakDay(dailyForecast) {
  */
 async function movingAverageFallback(product, daysAhead) {
   const lookbackDays = 30;
-  const startDate = new Date();
+  const { getEffectiveNow } = await import("./dateHelper.js");
+  const effectiveNow = await getEffectiveNow();
+  const startDate = new Date(effectiveNow);
   startDate.setDate(startDate.getDate() - lookbackDays);
 
   const matchFilter = { date: { $gte: startDate } };

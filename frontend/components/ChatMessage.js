@@ -55,6 +55,7 @@
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import ChartRenderer from "./ChartRenderer";
 
 /**
  * 🎓 FORMAT TIMESTAMP
@@ -153,7 +154,7 @@ const ChatMessage = memo(function ChatMessage({ message, isStreaming }) {
           </p>
         ) : (
           /**
-           * 🎓 AI MESSAGES — Markdown rendering
+           * 🎓 AI MESSAGES — Markdown rendering + Charts
            *
            *    ReactMarkdown takes a string like:
            *      "You need **342 burgers**\n\n| Day | Count |\n|---|---|\n| Mon | 48 |"
@@ -170,12 +171,18 @@ const ChatMessage = memo(function ChatMessage({ message, isStreaming }) {
            *    - Strikethrough
            *    - Task lists
            *    - Autolinks
+           *
+           *    ChartRenderer automatically detects and visualizes
+           *    chart-worthy data in the message (trends, comparisons).
            */
           <div className="chat-markdown text-sm leading-relaxed">
             {message.content ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content}
-              </ReactMarkdown>
+              <>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {message.content}
+                </ReactMarkdown>
+                <ChartRenderer toolData={message.toolData} />
+              </>
             ) : isStreaming ? (
               /**
                * 🎓 TYPING INDICATOR:
