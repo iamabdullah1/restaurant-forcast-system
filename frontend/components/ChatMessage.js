@@ -52,10 +52,11 @@
 
 "use client";
 
-import { memo } from "react";
+import { memo, useMemo, useRef, useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChartRenderer from "./ChartRenderer";
+import { exportMessageAsPdf } from "@/lib/pdf-report";
 
 /**
  * 🎓 FORMAT TIMESTAMP
@@ -94,6 +95,40 @@ function formatTime(date) {
 const ChatMessage = memo(function ChatMessage({ message, isStreaming }) {
   const isUser = message.role === "user";
   const isAI = message.role === "ai";
+  const reportRef = useRef(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [didAutoExport, setDidAutoExport] = useState(false);
+
+  const safeTitle = useMemo(() => {
+    const plain = (message.content || "ChefBot Report").replace(/[#*_`>\[\]\(\)]/g, "").trim();
+    return plain.length > 70 ? `${plain.slice(0, 70)}...` : plain || "ChefBot Report";
+  }, [message.content]);
+
+  const handleExportPdf = useCallback(async () => {
+    if (!reportRef.current || isExporting) return;
+
+    try {
+      setIsExporting(true);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const name = `chefbot-report-${stamp}.pdf`;
+      await exportMessageAsPdf({
+        element: reportRef.current,
+        fileName: name,
+        title: safeTitle,
+      });
+    } catch (err) {
+      console.error("PDF export failed:", err);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [isExporting, safeTitle]);
+
+  useEffect(() => {
+    if (!isAI || isStreaming) return;
+    if (!message.autoPdfPending || didAutoExport) return;
+    setDidAutoExport(true);
+    handleExportPdf();
+  }, [isAI, isStreaming, message.autoPdfPending, didAutoExport, handleExportPdf]);
 
   return (
     /**
@@ -116,13 +151,14 @@ const ChatMessage = memo(function ChatMessage({ message, isStreaming }) {
        *    If false, render nothing. Clean alternative to if/else.
        */}
       {isAI && (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-orange-500 to-amber-600 text-sm">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-orange-500 to-amber-600 text-sm">
           🧑‍🍳
         </div>
       )}
 
       {/* ── MESSAGE BUBBLE ── */}
       <div
+        ref={reportRef}
         className={`group relative max-w-[80%] rounded-2xl px-4 py-3 ${
           isUser
             ? /**
@@ -213,19 +249,32 @@ const ChatMessage = memo(function ChatMessage({ message, isStreaming }) {
          *    We show it once the message is complete.
          */}
         {message.content && !isStreaming && (
-          <div
-            className={`mt-1.5 text-[10px] ${
-              isUser ? "text-right text-blue-300/50" : "text-[--text-muted]"
-            }`}
-          >
-            {formatTime(message.timestamp)}
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <div
+              className={`text-[10px] ${
+                isUser ? "text-right text-blue-300/50" : "text-[--text-muted]"
+              }`}
+            >
+              {formatTime(message.timestamp)}
+            </div>
+
+            {isAI && (
+              <button
+                onClick={handleExportPdf}
+                disabled={isExporting}
+                className="rounded-md border border-[--border] px-2 py-1 text-[10px] text-[--text-secondary] hover:border-[--accent] hover:text-[--accent] disabled:cursor-not-allowed disabled:opacity-50"
+                title="Download this response as PDF"
+              >
+                {isExporting ? "Generating PDF..." : "Download PDF"}
+              </button>
+            )}
           </div>
         )}
       </div>
 
       {/* ── USER AVATAR (right side) ── */}
       {isUser && (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-sm">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-blue-500 to-indigo-600 text-sm">
           👤
         </div>
       )}

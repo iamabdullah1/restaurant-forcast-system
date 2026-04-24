@@ -125,6 +125,51 @@ function jsonSchemaPropertyToZod(prop, isRequired) {
       zodField = z.boolean();
       break;
 
+    case "array": {
+      // Support array params (e.g., create_chart.sources)
+      const itemSchema = prop.items || {};
+      const itemType = itemSchema.type;
+
+      if (itemType === "object" && itemSchema.properties) {
+        const itemRequired = itemSchema.required || [];
+        const itemShape = {};
+        for (const [k, v] of Object.entries(itemSchema.properties)) {
+          itemShape[k] = jsonSchemaPropertyToZod(v, itemRequired.includes(k));
+        }
+        zodField = z.array(z.object(itemShape));
+      } else if (itemType === "string") {
+        zodField = z.array(itemSchema.enum && itemSchema.enum.length > 0 ? z.enum(itemSchema.enum) : z.string());
+      } else if (itemType === "number" || itemType === "integer") {
+        let num = z.number();
+        if (itemSchema.minimum !== undefined) num = num.min(itemSchema.minimum);
+        if (itemSchema.maximum !== undefined) num = num.max(itemSchema.maximum);
+        zodField = z.array(num);
+      } else if (itemType === "boolean") {
+        zodField = z.array(z.boolean());
+      } else {
+        zodField = z.array(z.any());
+      }
+
+      if (prop.minItems !== undefined) zodField = zodField.min(prop.minItems);
+      if (prop.maxItems !== undefined) zodField = zodField.max(prop.maxItems);
+      break;
+    }
+
+    case "object": {
+      // Support nested object params
+      if (prop.properties) {
+        const nestedRequired = prop.required || [];
+        const nestedShape = {};
+        for (const [k, v] of Object.entries(prop.properties)) {
+          nestedShape[k] = jsonSchemaPropertyToZod(v, nestedRequired.includes(k));
+        }
+        zodField = z.object(nestedShape);
+      } else {
+        zodField = z.object({});
+      }
+      break;
+    }
+
     default:
       // Fallback: accept anything (shouldn't happen with our tools)
       zodField = z.any();

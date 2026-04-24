@@ -5,7 +5,7 @@
   "scripts": {
     "mcp": "cd mcp-server && npm start",
     "mcp:dev": "cd mcp-server && npm run dev",
-    "ml": "cd ml-service && uvicorn app.main:app --reload --port 8000",
+    "ml": "cd ml-service && ../.venv/bin/uvicorn app.main:app --reload --port 8000",
     "dev": "cd frontend && npm run dev"
   }
 }

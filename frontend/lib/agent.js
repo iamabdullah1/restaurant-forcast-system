@@ -77,7 +77,7 @@
  */
 
 import { ChatCohere } from "@langchain/cohere";
-import { ToolMessage } from "@langchain/core/messages";
+import { ToolMessage, AIMessage } from "@langchain/core/messages";
 import { getMCPTools } from "./mcp-client.js";
 import { chatPrompt } from "./prompts.js";
 import { getChatHistory, addToMemory } from "./memory.js";
@@ -586,6 +586,62 @@ function parseApiError(error) {
   };
 }
 
+/**
+ * Best-effort extraction of product + horizon from user text.
+ * Used only when model tool-call args are missing.
+ */
+function inferForecastArgsFromText(userText = "") {
+  const text = String(userText).toLowerCase();
+
+  const productMap = [
+    [/\bburgers?\b/, "Burgers"],
+    [/\bchicken\s+sandwich(es)?\b/, "Chicken Sandwiches"],
+    [/\bfries\b/, "Fries"],
+    [/\bbeverage(s)?\b|\bdrinks?\b/, "Beverages"],
+    [/\bsides?\b|\bother\b/, "Sides & Other"],
+    [/\ball\s+products?\b|\beverything\b|\ball\b/, "all"],
+  ];
+
+  let product = undefined;
+  for (const [re, value] of productMap) {
+    if (re.test(text)) {
+      product = value;
+      break;
+    }
+  }
+
+  // Horizon inference (days/weeks)
+  let days_ahead = undefined;
+  const weekMatch = text.match(/(\d+)\s*weeks?/i);
+  const dayMatch = text.match(/(\d+)\s*days?/i);
+  if (weekMatch) days_ahead = Number(weekMatch[1]) * 7;
+  else if (dayMatch) days_ahead = Number(dayMatch[1]);
+  else if (/next\s+week|coming\s+week/i.test(text)) days_ahead = 7;
+  else if (/next\s+2\s+weeks?/i.test(text)) days_ahead = 14;
+  else if (/next\s+month|this\s+month/i.test(text)) days_ahead = 30;
+
+  return { product, days_ahead };
+}
+
+/**
+ * Normalize/fill tool args if model emitted incomplete args.
+ */
+function normalizeToolArgs(toolName, args, userMessage) {
+  const normalized = { ...(args || {}) };
+
+  if (toolName === "forecast_demand") {
+    const inferred = inferForecastArgsFromText(userMessage);
+
+    if (!normalized.product && inferred.product) normalized.product = inferred.product;
+    if (!normalized.product) normalized.product = "all";
+
+    if (!normalized.days_ahead && inferred.days_ahead) normalized.days_ahead = inferred.days_ahead;
+    if (!normalized.days_ahead) normalized.days_ahead = 30;
+  }
+
+  return normalized;
+}
+
 function summarizeToolResult(toolName, fullResult) {
   try {
     const data = JSON.parse(fullResult);
@@ -750,6 +806,139 @@ export function runAgentStreaming(userMessage, sessionId) {
         controller.enqueue(encoder.encode(sseMessage));
       }
 
+      /**
+       * Extract plain text from LangChain chunk content.
+       */
+      function chunkToText(content) {
+        if (!content) return "";
+        if (typeof content === "string") return content;
+        if (Array.isArray(content)) {
+          return content
+            .map((part) => {
+              if (typeof part === "string") return part;
+              if (part && typeof part.text === "string") return part.text;
+              return "";
+            })
+            .join("");
+        }
+        return "";
+      }
+
+      /**
+       * Safely parse streamed JSON args for tool calls.
+       */
+      function safeParseArgs(argsText) {
+        if (!argsText || !argsText.trim()) return {};
+        try {
+          return JSON.parse(argsText);
+        } catch {
+          return {};
+        }
+      }
+
+      /**
+       * Stream one model turn with tools enabled.
+       * - If the turn is a FINAL answer: emits token events live.
+       * - If the turn is TOOL-CALL turn: captures tool_call_chunks and returns tool_calls.
+       */
+      async function streamModelTurnWithTools(llmWithTools, messages) {
+        const stream = await llmWithTools.stream(messages);
+
+        let textBuffer = "";
+        let hasToolChunks = false;
+        let emittedAnyToken = false;
+        const callMap = new Map(); // key=index -> { id, name, argsText, argsObj }
+
+        for await (const chunk of stream) {
+          const toolChunks = Array.isArray(chunk?.tool_call_chunks)
+            ? chunk.tool_call_chunks
+            : [];
+
+          if (toolChunks.length > 0) {
+            hasToolChunks = true;
+            for (const tc of toolChunks) {
+              const key = tc.index ?? callMap.size;
+              const existing = callMap.get(key) || {
+                id: tc.id || `call_${key}`,
+                name: tc.name || "",
+                argsText: "",
+                argsObj: null,
+              };
+
+              if (tc.id) existing.id = tc.id;
+              if (tc.name) existing.name = tc.name;
+              if (typeof tc.args === "string") existing.argsText += tc.args;
+              if (tc.args && typeof tc.args === "object") existing.argsObj = tc.args;
+
+              callMap.set(key, existing);
+            }
+          }
+
+          // Some providers stream completed tool calls via `tool_calls` (not chunks)
+          const fullToolCalls = Array.isArray(chunk?.tool_calls) ? chunk.tool_calls : [];
+          if (fullToolCalls.length > 0) {
+            hasToolChunks = true;
+            for (let i = 0; i < fullToolCalls.length; i++) {
+              const tc = fullToolCalls[i] || {};
+              const key = i;
+              const existing = callMap.get(key) || {
+                id: tc.id || `call_${key}`,
+                name: tc.name || "",
+                argsText: "",
+                argsObj: null,
+              };
+
+              if (tc.id) existing.id = tc.id;
+              if (tc.name) existing.name = tc.name;
+              if (tc.args && typeof tc.args === "object") existing.argsObj = tc.args;
+              if (typeof tc.args === "string") existing.argsText = tc.args;
+
+              callMap.set(key, existing);
+            }
+          }
+
+          const piece = chunkToText(chunk?.content);
+          if (piece) {
+            textBuffer += piece;
+            // True token streaming: emit as it arrives ONLY if this turn
+            // appears to be a final text response (no tool chunks seen).
+            if (!hasToolChunks) {
+              emittedAnyToken = true;
+              sendEvent({ type: "token", content: piece });
+            }
+          }
+        }
+
+        const tool_calls = [...callMap.values()]
+          .filter((c) => c.name)
+          .map((c) => ({
+            id: c.id,
+            name: c.name,
+            args: c.argsObj && typeof c.argsObj === "object" ? c.argsObj : safeParseArgs(c.argsText),
+          }));
+
+        return {
+          content: textBuffer,
+          tool_calls,
+          emittedAnyToken,
+        };
+      }
+
+      /**
+       * Stream a plain (no-tools) response and emit tokens live.
+       */
+      async function streamPlainText(llm, messages) {
+        const stream = await llm.stream(messages);
+        let text = "";
+        for await (const chunk of stream) {
+          const piece = chunkToText(chunk?.content);
+          if (!piece) continue;
+          text += piece;
+          sendEvent({ type: "token", content: piece });
+        }
+        return text;
+      }
+
       try {
         // ── Same setup as runAgent ──
         const tools = await getMCPTools();
@@ -773,7 +962,7 @@ export function runAgentStreaming(userMessage, sessionId) {
 
         // ── THE AGENT LOOP (same logic, but with events) ──
         for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-          const response = await llmWithTools.invoke(messages);
+          const response = await streamModelTurnWithTools(llmWithTools, messages);
 
           if (!response.tool_calls || response.tool_calls.length === 0) {
             // ── AUTO-CHART FALLBACK ──
@@ -881,8 +1070,8 @@ export function runAgentStreaming(userMessage, sessionId) {
                         chart_type: "line",
                         title: `📈 ${productName}: Past Sales vs Forecast`,
                         sources: [
-                          { source_tool: "get_sales_analytics", x_field: "period", y_field: "quantity", label: "Past Sales (Actual)", data_path: "data" },
-                          { source_tool: "forecast_demand", x_field: "date", y_field: "predicted_quantity", label: "Future Forecast", data_path: "daily_forecast" },
+                          { type: "line", source_tool: "get_sales_analytics", x_field: "period", y_field: "quantity", label: "Past Sales (Actual)", data_path: "data" },
+                          { type: "line", source_tool: "forecast_demand", x_field: "date", y_field: "predicted_quantity", label: "Future Forecast", data_path: "daily_forecast" },
                         ],
                       };
                     } else {
@@ -1001,14 +1190,13 @@ export function runAgentStreaming(userMessage, sessionId) {
               }
             }
 
-            // ── FINAL RESPONSE — Stream it word by word ──
-            fullText = response.content;
-
-            // Split into small chunks (words) for typing effect
-            const words = fullText.split(" ");
-            for (let w = 0; w < words.length; w++) {
-              const chunk = w === 0 ? words[w] : " " + words[w];
-              sendEvent({ type: "token", content: chunk });
+            // ── FINAL RESPONSE — true token streaming ──
+            // If this turn already streamed tokens live, reuse it.
+            // If not, stream once without tools.
+            fullText = response.content || "";
+            if (!response.emittedAnyToken) {
+              sendEvent({ type: "status", message: "🧠 Writing answer..." });
+              fullText = await streamPlainText(llm, messages);
             }
 
             // Send completion event with full text
@@ -1031,13 +1219,21 @@ export function runAgentStreaming(userMessage, sessionId) {
            *    generate a text response by re-invoking WITHOUT tools.
            */
           const currentSignature = JSON.stringify(
-            response.tool_calls.map((tc) => ({ name: tc.name, args: tc.args }))
+            response.tool_calls.map((tc) => ({
+              name: tc.name,
+              args: normalizeToolArgs(tc.name, tc.args, userMessage),
+            }))
           );
 
           if (currentSignature === lastToolSignature) {
             console.error("⚠️  Duplicate tool call detected, forcing text response...");
             // Re-invoke the LLM WITHOUT tools to force a text answer
-            messages.push(response);
+            messages.push(
+              new AIMessage({
+                content: response.content || "",
+                tool_calls: response.tool_calls,
+              })
+            );
             for (const toolCall of response.tool_calls) {
               messages.push(
                 new ToolMessage({
@@ -1047,13 +1243,8 @@ export function runAgentStreaming(userMessage, sessionId) {
                 })
               );
             }
-            const forcedResponse = await llm.invoke(messages);
-            fullText = forcedResponse.content;
-            const words = fullText.split(" ");
-            for (let w = 0; w < words.length; w++) {
-              const chunk = w === 0 ? words[w] : " " + words[w];
-              sendEvent({ type: "token", content: chunk });
-            }
+            sendEvent({ type: "status", message: "🧠 Writing answer..." });
+            fullText = await streamPlainText(llm, messages);
             sendEvent({ type: "done", fullText });
             await addToMemory(sessionId, userMessage, fullText);
             controller.close();
@@ -1061,7 +1252,12 @@ export function runAgentStreaming(userMessage, sessionId) {
           }
           lastToolSignature = currentSignature;
 
-          messages.push(response);
+          messages.push(
+            new AIMessage({
+              content: response.content || "",
+              tool_calls: response.tool_calls,
+            })
+          );
 
           for (const toolCall of response.tool_calls) {
             /**
@@ -1085,6 +1281,8 @@ export function runAgentStreaming(userMessage, sessionId) {
             const friendlyName =
               friendlyNames[toolCall.name] || `🔧 Running ${toolCall.name}`;
 
+            const normalizedArgs = normalizeToolArgs(toolCall.name, toolCall.args, userMessage);
+
             sendEvent({
               type: "tool_start",
               tool: toolCall.name,
@@ -1096,7 +1294,7 @@ export function runAgentStreaming(userMessage, sessionId) {
 
             if (tool) {
               try {
-                result = await tool.invoke(toolCall.args);
+                result = await tool.invoke(normalizedArgs);
               } catch (error) {
                 result = `Error executing ${toolCall.name}: ${error.message}`;
               }

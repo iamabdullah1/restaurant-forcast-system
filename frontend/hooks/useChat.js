@@ -202,6 +202,10 @@ export function useChat() {
    *    but good practice and important in larger ones.
    */
   const sendMessage = useCallback(async (userMessage) => {
+        const wantsPdf = /\b(pdf|report|download report|export report|make.*pdf)\b/i.test(
+          userMessage
+        );
+
     // ── GUARD: Don't send empty messages or while already streaming ──
     if (!userMessage.trim() || isStreaming) return;
 
@@ -238,6 +242,8 @@ export function useChat() {
       role: "ai",
       content: "",
       timestamp: new Date(),
+      wantsPdf,
+      autoPdfPending: false,
     };
 
     setMessages((prev) => [...prev, userMsg, aiMsg]);
@@ -476,7 +482,11 @@ export function useChat() {
                 setMessages((prev) =>
                   prev.map((msg) =>
                     msg.id === aiMessageId
-                      ? { ...msg, content: data.fullText }
+                      ? {
+                          ...msg,
+                          content: data.fullText,
+                          autoPdfPending: !!msg.wantsPdf,
+                        }
                       : msg
                   )
                 );
