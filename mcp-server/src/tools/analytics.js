@@ -32,6 +32,36 @@
 import Sale from "../models/Sale.js";
 import { buildSmartDateFilter } from "./dateHelper.js";
 
+// ── Short-lived in-memory cache (fast follow-up optimization) ──
+const ANALYTICS_CACHE_TTL_MS = Number(process.env.ANALYTICS_CACHE_TTL_MS || 60_000); // 60s default
+const analyticsCache = new Map();
+
+function getAnalyticsCacheKey({ analysis_type, days, group_by }) {
+  return [
+    "get_sales_analytics",
+    `type=${analysis_type}`,
+    `days=${Number(days)}`,
+    `group=${group_by || ""}`,
+  ].join("|");
+}
+
+function readAnalyticsCache(key) {
+  const entry = analyticsCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    analyticsCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function writeAnalyticsCache(key, value) {
+  analyticsCache.set(key, {
+    value,
+    expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS,
+  });
+}
+
 // ─── HELPER: Build the date filter ──────────────────────
 /**
  * 🎓 buildDateFilter(days):
@@ -333,6 +363,20 @@ export async function handleGetSalesAnalytics({
   group_by = "day",
 }) {
   try {
+    const cacheKey = getAnalyticsCacheKey({ analysis_type, days, group_by });
+    const cached = readAnalyticsCache(cacheKey);
+    if (cached) {
+      console.error(`⚡ get_sales_analytics cache hit: ${analysis_type}, days=${days}, group_by=${group_by}`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(cached, null, 2),
+          },
+        ],
+      };
+    }
+
     const dateFilter = await buildDateFilter(days);
 
     /**
@@ -375,6 +419,8 @@ export async function handleGetSalesAnalytics({
       ...(group_by && analysis_type === "trend" ? { grouped_by: group_by } : {}),
       data,
     };
+
+    writeAnalyticsCache(cacheKey, response);
 
     return {
       content: [

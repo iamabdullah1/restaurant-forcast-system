@@ -44,6 +44,31 @@ const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
 // If Prophet is still training, this gives it time to respond.
 const ML_TIMEOUT_MS = 30000;
 
+// ── Short-lived in-memory cache (fast follow-up optimization) ──
+const FORECAST_CACHE_TTL_MS = Number(process.env.FORECAST_CACHE_TTL_MS || 60_000); // 60s default
+const forecastCache = new Map();
+
+function getForecastCacheKey(product, daysAhead) {
+  return `forecast_demand|product=${String(product).toLowerCase()}|days=${Number(daysAhead)}`;
+}
+
+function readForecastCache(key) {
+  const entry = forecastCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    forecastCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function writeForecastCache(key, value) {
+  forecastCache.set(key, {
+    value,
+    expiresAt: Date.now() + FORECAST_CACHE_TTL_MS,
+  });
+}
+
 
 // ═══════════════════════════════════════════════════════════
 // MAIN HANDLER
@@ -63,6 +88,20 @@ const ML_TIMEOUT_MS = 30000;
  */
 export async function handleForecastDemand({ product = "all", days_ahead = 30 }) {
   try {
+    const cacheKey = getForecastCacheKey(product, days_ahead);
+    const cached = readForecastCache(cacheKey);
+    if (cached) {
+      console.error(`⚡ forecast_demand cache hit: ${product}, ${days_ahead} days`);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(cached, null, 2),
+          },
+        ],
+      };
+    }
+
     // ── Attempt 1: Call the real ML service ───────────
     console.error(`🔮 forecast_demand: Calling ML service for ${product}, ${days_ahead} days...`);
 
@@ -70,6 +109,7 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
 
     if (mlResult) {
       console.error(`✅ ML service responded successfully`);
+      writeForecastCache(cacheKey, mlResult);
       return {
         content: [
           {
@@ -83,6 +123,7 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
     // ── Attempt 2: Fallback to moving-average stub ───
     console.error(`⚠️  ML service unavailable, using moving-average fallback`);
     const fallbackResult = await movingAverageFallback(product, days_ahead);
+    writeForecastCache(cacheKey, fallbackResult);
 
     return {
       content: [
@@ -129,7 +170,7 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
  *    If the server doesn't respond in time, the request is aborted.
  *    Without this, a hung server would block the MCP tool forever.
  *
- * @returns {object|null} Combined forecast+profit data, or null if service is down
+ * @returns {Promise<object|null>} Combined forecast+profit data, or null if service is down
  */
 async function callMLService(product, days) {
   try {
