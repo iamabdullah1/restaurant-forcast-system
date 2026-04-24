@@ -316,37 +316,45 @@ export async function runAgent(userMessage, sessionId) {
 
     messages.push(response);
 
-    // Execute each tool call and collect results
-    for (const toolCall of response.tool_calls) {
-      /**
-       * 🎓 FINDING THE RIGHT TOOL:
-       *    The LLM says "call forecast_demand". We need to find
-       *    the matching tool object from our tools array to
-       *    actually execute it.
-       */
-      const tool = tools.find((t) => t.name === toolCall.name);
+    // Execute each tool call in parallel and collect results
+    const toolResults = await Promise.all(
+      response.tool_calls.map(async (toolCall) => {
+        /**
+         * 🎓 FINDING THE RIGHT TOOL:
+         *    The LLM says "call forecast_demand". We need to find
+         *    the matching tool object from our tools array to
+         *    actually execute it.
+         */
+        const tool = tools.find((t) => t.name === toolCall.name);
+        const normalizedArgs = normalizeToolArgs(toolCall.name, toolCall.args, userMessage);
 
-      let result;
-      if (tool) {
-        try {
-          /**
-           * 🎓 tool.invoke(args)
-           *    This calls the DynamicStructuredTool's func() from
-           *    Step 3.1, which calls client.callTool() on the MCP
-           *    Server. The MCP Server executes the real handler
-           *    (MongoDB query, ML service call, etc.) and returns
-           *    the result as text.
-           *
-           *    The chain: tool.invoke() → MCP Client → MCP Server → handler
-           */
-          result = await tool.invoke(toolCall.args);
-        } catch (error) {
-          result = `Error executing ${toolCall.name}: ${error.message}`;
+        let result;
+        if (tool) {
+          try {
+            /**
+             * 🎓 tool.invoke(args)
+             *    This calls the DynamicStructuredTool's func() from
+             *    Step 3.1, which calls client.callTool() on the MCP
+             *    Server. The MCP Server executes the real handler
+             *    (MongoDB query, ML service call, etc.) and returns
+             *    the result as text.
+             *
+             *    The chain: tool.invoke() → MCP Client → MCP Server → handler
+             */
+            result = await tool.invoke(normalizedArgs);
+          } catch (error) {
+            result = `Error executing ${toolCall.name}: ${error.message}`;
+          }
+        } else {
+          result = `Tool "${toolCall.name}" not found.`;
         }
-      } else {
-        result = `Tool "${toolCall.name}" not found.`;
-      }
 
+        return { toolCall, result };
+      })
+    );
+
+    // Add ToolMessages in original tool-call order for deterministic context
+    for (const { toolCall, result } of toolResults) {
       /**
        * 🎓 ToolMessage — Special Message Type
        *
@@ -355,12 +363,6 @@ export async function runAgent(userMessage, sessionId) {
        *    tool_call_id. This is how the LLM knows which result
        *    belongs to which tool call (important when multiple
        *    tools are called in parallel).
-       *
-       *    {
-       *      content: "{...forecast data JSON...}",
-       *      tool_call_id: "call_abc123",  ← matches the tool_call above
-       *      name: "forecast_demand"
-       *    }
        */
       messages.push(
         new ToolMessage({
@@ -1259,7 +1261,8 @@ export function runAgentStreaming(userMessage, sessionId) {
             })
           );
 
-          for (const toolCall of response.tool_calls) {
+          const toolResults = await Promise.all(
+            response.tool_calls.map(async (toolCall) => {
             /**
              * 🎓 TOOL STATUS EVENTS
              *    We send "tool_start" when a tool begins executing,
@@ -1309,6 +1312,17 @@ export function runAgentStreaming(userMessage, sessionId) {
               data: typeof result === "string" ? result : JSON.stringify(result),
             });
 
+            const fullResult = typeof result === "string" ? result : JSON.stringify(result);
+            return {
+              toolCall,
+              fullResult,
+              compactResult: summarizeToolResult(toolCall.name, fullResult),
+            };
+          })
+          );
+
+          // Preserve deterministic LLM context ordering while still executing in parallel
+          for (const { toolCall, fullResult, compactResult } of toolResults) {
             calledTools.push(toolCall.name);
 
             /**
@@ -1327,9 +1341,7 @@ export function runAgentStreaming(userMessage, sessionId) {
              *    This keeps the LLM within token limits (Groq free tier = 6000 TPM)
              *    while still giving the frontend everything it needs.
              */
-            const fullResult = typeof result === "string" ? result : JSON.stringify(result);
             fullToolResults[toolCall.name] = fullResult; // Store FULL data for auto-chart comparison
-            const compactResult = summarizeToolResult(toolCall.name, fullResult);
 
             messages.push(
               new ToolMessage({
