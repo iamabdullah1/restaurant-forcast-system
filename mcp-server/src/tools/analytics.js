@@ -31,21 +31,27 @@
 
 import Sale from "../models/Sale.js";
 import { buildSmartDateFilter } from "./dateHelper.js";
+import { cacheGet, cacheSet } from "../utils/cache.js";
 
 // ── Short-lived in-memory cache (fast follow-up optimization) ──
 const ANALYTICS_CACHE_TTL_MS = Number(process.env.ANALYTICS_CACHE_TTL_MS || 60_000); // 60s default
 const analyticsCache = new Map();
 
-function getAnalyticsCacheKey({ analysis_type, days, group_by }) {
+function getAnalyticsCacheKey({ analysis_type, days, group_by, start_date, end_date }) {
   return [
     "get_sales_analytics",
     `type=${analysis_type}`,
     `days=${Number(days)}`,
     `group=${group_by || ""}`,
+    `start=${start_date || ""}`,
+    `end=${end_date || ""}`,
   ].join("|");
 }
 
-function readAnalyticsCache(key) {
+async function readAnalyticsCache(key) {
+  const shared = await cacheGet(key);
+  if (shared) return shared;
+
   const entry = analyticsCache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
@@ -55,7 +61,8 @@ function readAnalyticsCache(key) {
   return entry.value;
 }
 
-function writeAnalyticsCache(key, value) {
+async function writeAnalyticsCache(key, value) {
+  await cacheSet(key, value, ANALYTICS_CACHE_TTL_MS);
   analyticsCache.set(key, {
     value,
     expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS,
@@ -76,8 +83,8 @@ function writeAnalyticsCache(key, value) {
  * 🎓 $gte means "greater than or equal to" — a MongoDB comparison operator.
  *    So { date: { $gte: someDate } } means "date >= someDate"
  */
-async function buildDateFilter(days) {
-  return await buildSmartDateFilter(days);
+async function buildDateFilter(days, start_date, end_date) {
+  return await buildSmartDateFilter(days, start_date, end_date);
 }
 
 // ─── Analysis: Overview (Total summary) ─────────────────
@@ -345,7 +352,7 @@ async function getTopSellers(dateFilter, limit = 5) {
 // MAIN HANDLER
 // ═══════════════════════════════════════════════════════════
 /**
- * 🎓 handleGetSalesAnalytics({ analysis_type, days, group_by }):
+ * 🎓 handleGetSalesAnalytics({ analysis_type, days, group_by, start_date, end_date }):
  *    Called by MCP Server when AI invokes "get_sales_analytics".
  *
  *    Dispatches to the appropriate sub-function based on analysis_type.
@@ -356,15 +363,19 @@ async function getTopSellers(dateFilter, limit = 5) {
  * @param {string} params.analysis_type - one of: overview, by_product, by_channel, trend, top_sellers
  * @param {number} params.days - lookback period (optional, 0 = all time)
  * @param {string} params.group_by - for trend: day, week, or month
+ * @param {string} params.start_date - optional ISO start date (YYYY-MM-DD)
+ * @param {string} params.end_date - optional ISO end date (YYYY-MM-DD)
  */
 export async function handleGetSalesAnalytics({
   analysis_type = "overview",
   days = 30,
   group_by = "day",
+  start_date = undefined,
+  end_date = undefined,
 }) {
   try {
-    const cacheKey = getAnalyticsCacheKey({ analysis_type, days, group_by });
-    const cached = readAnalyticsCache(cacheKey);
+    const cacheKey = getAnalyticsCacheKey({ analysis_type, days, group_by, start_date, end_date });
+    const cached = await readAnalyticsCache(cacheKey);
     if (cached) {
       console.error(`⚡ get_sales_analytics cache hit: ${analysis_type}, days=${days}, group_by=${group_by}`);
       return {
@@ -377,7 +388,7 @@ export async function handleGetSalesAnalytics({
       };
     }
 
-    const dateFilter = await buildDateFilter(days);
+    const dateFilter = await buildDateFilter(days, start_date, end_date);
 
     /**
      * 🎓 Dispatcher Pattern:
@@ -413,14 +424,20 @@ export async function handleGetSalesAnalytics({
     const data = await analysisFn();
 
     // Build response with metadata
+    const periodLabel = start_date || end_date
+      ? `${start_date || "?"} to ${end_date || "?"}`
+      : days > 0
+        ? `Last ${days} days`
+        : "All time";
+
     const response = {
       analysis_type,
-      period: days > 0 ? `Last ${days} days` : "All time",
+      period: periodLabel,
       ...(group_by && analysis_type === "trend" ? { grouped_by: group_by } : {}),
       data,
     };
 
-    writeAnalyticsCache(cacheKey, response);
+    await writeAnalyticsCache(cacheKey, response);
 
     return {
       content: [

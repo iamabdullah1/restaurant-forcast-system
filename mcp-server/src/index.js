@@ -54,9 +54,9 @@ server.tool(
     days_ahead: z
       .number()
       .min(1)
-      .max(365)
+      .max(1000)
       .default(30)
-      .describe("Number of days to forecast (1-365, default 30)"),
+      .describe("Number of days to forecast (1-1000, default 30)"),
   },
   handleForecastDemand
 );
@@ -90,7 +90,7 @@ server.tool(
     days: z
       .number()
       .min(0)
-      .max(365)
+      .max(1000)
       .default(30)
       .describe("Lookback period in days (0 = all time, default 30)"),
     include_trend: z
@@ -115,9 +115,9 @@ server.tool(
     days_ahead: z
       .number()
       .min(1)
-      .max(365)
+      .max(1000)
       .default(90)
-      .describe("How many days ahead to look (1-365, default 90)"),
+      .describe("How many days ahead to look (1-1000, default 90)"),
     country_code: z
       .string()
       .default("US")
@@ -141,9 +141,17 @@ server.tool(
     days: z
       .number()
       .min(0)
-      .max(365)
+      .max(1000)
       .default(30)
       .describe("Lookback period in days (0 = all time, default 30)"),
+    start_date: z
+      .string()
+      .optional()
+      .describe("Optional ISO start date (YYYY-MM-DD). Overrides 'days' if provided."),
+    end_date: z
+      .string()
+      .optional()
+      .describe("Optional ISO end date (YYYY-MM-DD). Overrides 'days' if provided."),
     group_by: z
       .enum(["day", "week", "month"])
       .default("day")

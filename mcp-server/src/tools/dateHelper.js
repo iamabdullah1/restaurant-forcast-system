@@ -69,7 +69,30 @@ export async function getMaxSalesDate() {
  * @param {number} days - Number of days to look back. 0 or falsy = all time.
  * @returns {Promise<object>} MongoDB filter object, e.g., { date: { $gte: Date } }
  */
-export async function buildSmartDateFilter(days) {
+export async function buildSmartDateFilter(days, startDateStr, endDateStr) {
+  const hasStart = !!startDateStr;
+  const hasEnd = !!endDateStr;
+
+  if (hasStart || hasEnd) {
+    const dateFilter = {};
+
+    if (hasStart) {
+      const startDate = new Date(startDateStr);
+      if (!Number.isNaN(startDate.getTime())) {
+        dateFilter.$gte = startDate;
+      }
+    }
+
+    if (hasEnd) {
+      const endDate = new Date(endDateStr);
+      if (!Number.isNaN(endDate.getTime())) {
+        dateFilter.$lte = endDate;
+      }
+    }
+
+    return Object.keys(dateFilter).length > 0 ? { date: dateFilter } : {};
+  }
+
   if (!days || days <= 0) return {};
 
   const maxDate = await getMaxSalesDate();

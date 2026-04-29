@@ -76,6 +76,7 @@ const saleSchema = new mongoose.Schema(
       type: String,
       required: true,
       enum: ["In-store", "Drive-thru", "Online"],
+      index: true,
     },
     paymentMethod: {
       type: String,
@@ -109,6 +110,8 @@ const saleSchema = new mongoose.Schema(
  */
 saleSchema.index({ date: 1, product: 1 });
 saleSchema.index({ product: 1, date: 1 });
+saleSchema.index({ date: 1, purchaseType: 1 });
+saleSchema.index({ purchaseType: 1, date: 1 });
 
 /**
  * 🎓 mongoose.model("Sale", saleSchema) does two things:

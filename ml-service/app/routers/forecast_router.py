@@ -48,6 +48,7 @@ from app.services.profit_projector import (
 # tags=["Forecasting"] groups them together in the /docs UI
 forecast_router = APIRouter(prefix="/forecast", tags=["Forecasting"])
 profit_router = APIRouter(prefix="/profit", tags=["Profit Projection"])
+combined_router = APIRouter(prefix="/forecast-with-profit", tags=["Forecasting"])
 model_router = APIRouter(prefix="/model", tags=["Model Management"])
 
 
@@ -63,7 +64,7 @@ model_router = APIRouter(prefix="/model", tags=["Model Management"])
 )
 async def get_product_forecast(
     product: str,
-    days: int = Query(default=30, ge=1, le=365, description="Number of days to forecast (1-365)"),
+    days: int = Query(default=30, ge=1, le=1000, description="Number of days to forecast (1-1000)"),
 ):
     """
     GET /forecast/{product}?days=30
@@ -72,7 +73,7 @@ async def get_product_forecast(
     Returns: 30 days of predicted Burger demand with confidence intervals
 
     The 'product' parameter comes from the URL path.
-    The 'days' parameter is optional (default=30), validated to be 1-365.
+    The 'days' parameter is optional (default=30), validated to be 1-1000.
 
     Query() is FastAPI's way to add validation + description to query params.
     ge=1 means "greater than or equal to 1", le=90 means "less than or equal to 90".
@@ -103,7 +104,7 @@ async def get_product_forecast(
     "Useful for daily briefings and inventory planning.",
 )
 async def get_all_forecasts(
-    days: int = Query(default=30, ge=1, le=365, description="Number of days to forecast (1-365)"),
+    days: int = Query(default=30, ge=1, le=1000, description="Number of days to forecast (1-1000)"),
 ):
     """
     GET /forecast/?days=30
@@ -131,7 +132,7 @@ async def get_all_forecasts(
 )
 async def get_product_profit(
     product: str,
-    days: int = Query(default=30, ge=1, le=365, description="Number of days to project (1-365)"),
+    days: int = Query(default=30, ge=1, le=1000, description="Number of days to project (1-1000)"),
 ):
     """
     GET /profit/{product}?days=30
@@ -160,6 +161,73 @@ async def get_product_profit(
         raise HTTPException(status_code=500, detail={"error": str(e)})
 
 
+# ═══════════════════════════════════════════════════════════
+# COMBINED FORECAST + PROFIT ENDPOINTS
+# ═══════════════════════════════════════════════════════════
+
+@combined_router.get(
+    "/{product}",
+    summary="Forecast + profit for one product (single call)",
+    description="Returns demand forecast and profit projection together in one response.",
+)
+async def get_product_forecast_with_profit(
+    product: str,
+    days: int = Query(default=30, ge=1, le=1000, description="Number of days to forecast (1-1000)"),
+):
+    """
+    GET /forecast-with-profit/{product}?days=30
+
+    Returns:
+      {
+        "forecast": { ... },
+        "profit": { ... }
+      }
+    """
+    valid_products = ["Burgers", "Chicken Sandwiches", "Fries", "Beverages", "Sides & Other"]
+    if product not in valid_products:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Unknown product: '{product}'",
+                "valid_products": valid_products,
+            },
+        )
+
+    try:
+        db = get_database()
+        forecast = forecast_product(product, days=days, db=db)
+        projection = project_profit_for_product(forecast)
+        return {
+            "forecast": forecast,
+            "profit": projection,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+
+@combined_router.get(
+    "/",
+    summary="Forecast + profit for all products (single call)",
+    description="Returns forecasts and profit projection for all products together in one response.",
+)
+async def get_all_forecasts_with_profit(
+    days: int = Query(default=30, ge=1, le=1000, description="Number of days to forecast (1-1000)"),
+):
+    """
+    GET /forecast-with-profit/?days=30
+    """
+    try:
+        db = get_database()
+        all_forecasts = forecast_all_products(days=days, db=db)
+        projection = project_profit_all_products(all_forecasts)
+        return {
+            "forecast": all_forecasts,
+            "profit": projection,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e)})
+
+
 @profit_router.get(
     "/",
     summary="Profit projection for all products combined",
@@ -167,7 +235,7 @@ async def get_product_profit(
     "product ranking by profit contribution, and blended margin.",
 )
 async def get_all_profit(
-    days: int = Query(default=30, ge=1, le=365, description="Number of days to project (1-365)"),
+    days: int = Query(default=30, ge=1, le=1000, description="Number of days to project (1-1000)"),
 ):
     """
     GET /profit/?days=30

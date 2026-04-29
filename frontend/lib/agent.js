@@ -114,6 +114,31 @@ import { getChatHistory, addToMemory } from "./memory.js";
  */
 let llmInstance = null;
 
+// ─── MCP TOOLS + BOUND LLM CACHE ─────────────────────
+const globalForAgent = globalThis;
+if (!globalForAgent.__restaurantAgentCache) {
+  globalForAgent.__restaurantAgentCache = {
+    toolsPromise: null,
+    llmWithTools: null,
+  };
+}
+const agentCache = globalForAgent.__restaurantAgentCache;
+
+async function getCachedTools() {
+  if (!agentCache.toolsPromise) {
+    agentCache.toolsPromise = getMCPTools();
+  }
+  return agentCache.toolsPromise;
+}
+
+function getCachedLLMWithTools(tools) {
+  if (!agentCache.llmWithTools) {
+    const llm = getLLM();
+    agentCache.llmWithTools = llm.bindTools(tools);
+  }
+  return agentCache.llmWithTools;
+}
+
 function getLLM() {
   if (!llmInstance) {
     llmInstance = new ChatCohere({
@@ -165,7 +190,7 @@ export async function runAgent(userMessage, sessionId) {
    *    from Step 3.1. On first call, it spawns the MCP Server
    *    and discovers tools. On subsequent calls, returns cached.
    */
-  const tools = await getMCPTools();
+  const tools = await getCachedTools();
 
   // ── STEP 2: BIND TOOLS TO LLM ──
   /**
@@ -194,7 +219,7 @@ export async function runAgent(userMessage, sessionId) {
    *    function calling — it knows how to pick tools and format args.
    */
   const llm = getLLM();
-  const llmWithTools = llm.bindTools(tools);
+  const llmWithTools = getCachedLLMWithTools(tools);
 
   // ── STEP 3: BUILD THE PROMPT ──
   /**
@@ -665,10 +690,7 @@ function summarizeToolResult(toolName, fullResult) {
           metadata: data.metadata,
           summary: data.summary,
           profit_projection: data.profit_projection,
-          daily_forecast_sample: [
-            ...(data.daily_forecast?.slice(0, 2) || []),
-            ...(data.daily_forecast?.slice(-1) || []),
-          ],
+          daily_forecast: data.daily_forecast || [],
           _action_required: `YOU MUST NOW call the create_chart tool with these exact parameters: source_tool="forecast_demand", chart_type="line", title="🔮 Demand Forecast", x_field="date", y_field="predicted_quantity", data_path="daily_forecast". Do NOT describe chart instructions to the user — call the tool.`,
         };
         return JSON.stringify(summary);
@@ -943,9 +965,9 @@ export function runAgentStreaming(userMessage, sessionId) {
 
       try {
         // ── Same setup as runAgent ──
-        const tools = await getMCPTools();
+        const tools = await getCachedTools();
         const llm = getLLM();
-        const llmWithTools = llm.bindTools(tools);
+        const llmWithTools = getCachedLLMWithTools(tools);
         const chatHistory = await getChatHistory(sessionId);
 
         const messages = await chatPrompt.formatMessages({

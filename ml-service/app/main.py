@@ -35,7 +35,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 from app.database import get_database
 from app.services.demand_forecaster import train_all_models, get_model_status
-from app.routers.forecast_router import forecast_router, profit_router, model_router
+from app.routers.forecast_router import forecast_router, profit_router, combined_router, model_router
 
 
 # ── Lifespan Event ───────────────────────────────────────
@@ -109,6 +109,8 @@ async def root():
             "GET  /health",
             "GET  /forecast/{product}?days=30",
             "GET  /forecast/?days=30",
+            "GET  /forecast-with-profit/{product}?days=30",
+            "GET  /forecast-with-profit/?days=30",
             "GET  /profit/{product}?days=30",
             "GET  /profit/?days=30",
             "GET  /model/status",
@@ -124,4 +126,5 @@ async def root():
 # model_router → /model/*
 app.include_router(forecast_router)
 app.include_router(profit_router)
+app.include_router(combined_router)
 app.include_router(model_router)

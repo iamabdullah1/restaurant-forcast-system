@@ -34,6 +34,7 @@
  */
 
 import Sale from "../models/Sale.js";
+import { cacheGet, cacheSet } from "../utils/cache.js";
 
 // ── Configuration ───────────────────────────────────────
 // The ML service URL. In production, this would come from environment variables.
@@ -52,7 +53,10 @@ function getForecastCacheKey(product, daysAhead) {
   return `forecast_demand|product=${String(product).toLowerCase()}|days=${Number(daysAhead)}`;
 }
 
-function readForecastCache(key) {
+async function readForecastCache(key) {
+  const shared = await cacheGet(key);
+  if (shared) return shared;
+
   const entry = forecastCache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
@@ -62,7 +66,8 @@ function readForecastCache(key) {
   return entry.value;
 }
 
-function writeForecastCache(key, value) {
+async function writeForecastCache(key, value) {
+  await cacheSet(key, value, FORECAST_CACHE_TTL_MS);
   forecastCache.set(key, {
     value,
     expiresAt: Date.now() + FORECAST_CACHE_TTL_MS,
@@ -89,7 +94,7 @@ function writeForecastCache(key, value) {
 export async function handleForecastDemand({ product = "all", days_ahead = 30 }) {
   try {
     const cacheKey = getForecastCacheKey(product, days_ahead);
-    const cached = readForecastCache(cacheKey);
+    const cached = await readForecastCache(cacheKey);
     if (cached) {
       console.error(`⚡ forecast_demand cache hit: ${product}, ${days_ahead} days`);
       return {
@@ -109,7 +114,7 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
 
     if (mlResult) {
       console.error(`✅ ML service responded successfully`);
-      writeForecastCache(cacheKey, mlResult);
+      await writeForecastCache(cacheKey, mlResult);
       return {
         content: [
           {
@@ -123,7 +128,7 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
     // ── Attempt 2: Fallback to moving-average stub ───
     console.error(`⚠️  ML service unavailable, using moving-average fallback`);
     const fallbackResult = await movingAverageFallback(product, days_ahead);
-    writeForecastCache(cacheKey, fallbackResult);
+    await writeForecastCache(cacheKey, fallbackResult);
 
     return {
       content: [
@@ -183,22 +188,19 @@ async function callMLService(product, days) {
      */
     const encodedProduct = encodeURIComponent(product);
 
-    let forecastUrl, profitUrl;
+    let combinedUrl;
 
     if (product === "all") {
-      forecastUrl = `${ML_SERVICE_URL}/forecast/?days=${days}`;
-      profitUrl = `${ML_SERVICE_URL}/profit/?days=${days}`;
+      combinedUrl = `${ML_SERVICE_URL}/forecast-with-profit/?days=${days}`;
     } else {
-      forecastUrl = `${ML_SERVICE_URL}/forecast/${encodedProduct}?days=${days}`;
-      profitUrl = `${ML_SERVICE_URL}/profit/${encodedProduct}?days=${days}`;
+      combinedUrl = `${ML_SERVICE_URL}/forecast-with-profit/${encodedProduct}?days=${days}`;
     }
 
-    // ── Make both requests in parallel ──────────────
+    // ── Single combined request ──────────────
     /**
-     * 🎓 Promise.all:
-     *    Runs multiple async operations simultaneously.
-     *    Instead of waiting for forecast, THEN waiting for profit (slow),
-     *    we fire both at once and wait for both to finish (fast).
+     * 🎓 Single-call optimization:
+     *    Forecast + profit are computed in one ML request.
+     *    This avoids a second HTTP round-trip and reduces latency.
      *
      * 🎓 AbortController:
      *    Creates a "cancel signal" that we pass to fetch.
@@ -208,23 +210,19 @@ async function callMLService(product, days) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), ML_TIMEOUT_MS);
 
-    const [forecastRes, profitRes] = await Promise.all([
-      fetch(forecastUrl, { signal: controller.signal }),
-      fetch(profitUrl, { signal: controller.signal }),
-    ]);
+    const combinedRes = await fetch(combinedUrl, { signal: controller.signal });
 
     clearTimeout(timeout);
 
     // ── Check responses ─────────────────────────────
-    if (!forecastRes.ok || !profitRes.ok) {
-      console.error(
-        `ML service returned error: forecast=${forecastRes.status}, profit=${profitRes.status}`
-      );
+    if (!combinedRes.ok) {
+      console.error(`ML service returned error: combined=${combinedRes.status}`);
       return null; // Will trigger fallback
     }
 
-    const forecastData = await forecastRes.json();
-    const profitData = await profitRes.json();
+    const combinedData = await combinedRes.json();
+    const forecastData = combinedData?.forecast || combinedData?.forecast_data || combinedData;
+    const profitData = combinedData?.profit || combinedData?.profit_data || {};
 
     // ── Combine into unified response ───────────────
     /**
