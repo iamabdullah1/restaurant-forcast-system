@@ -7,6 +7,20 @@
 			"command": "cd /Users/apple/Desktop/learnings/restaurant/frontend && npx next dev --turbopack -p 3000",
 			"isBackground": true,
 			"problemMatcher": []
+		},
+		{
+			"label": "Update Settings",
+			"type": "shell",
+			"command": "node update_settings.js",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "Check ML Logs",
+			"type": "shell",
+			"command": "cat /tmp/restaurant-ml.log | grep -i prediction | tail -n 10",
+			"isBackground": false,
+			"group": "test"
 		}
 	]
 }
