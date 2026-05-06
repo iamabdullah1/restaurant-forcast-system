@@ -1,7 +1,7 @@
 ---
 title: restaurant-mcp-server
 emoji: "🍔"
-colorFrom: orange
+colorFrom: red
 colorTo: blue
 sdk: docker
 app_port: 7860
