@@ -339,8 +339,10 @@ function wrapMCPToolForLangChain(mcpTool, client) {
  */
 export async function getMCPTools() {
   // ── RETURN CACHED TOOLS IF ALREADY INITIALIZED ──
-  // NOTE: After MCP schema changes, clear caches by restarting the dev server.
-  if (globalForMCP._mcpTools && globalForMCP._mcpTools.length > 0) {
+  // In Serverless environments (Vercel) over SSE, background connections drop.
+  // We only cache if we are running locally via STDIO.
+  const isServerless = !!process.env.REMOTE_MCP_URL;
+  if (!isServerless && globalForMCP._mcpTools && globalForMCP._mcpTools.length > 0) {
     return globalForMCP._mcpTools;
   }
 
