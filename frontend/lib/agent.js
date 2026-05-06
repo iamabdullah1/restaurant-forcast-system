@@ -650,11 +650,74 @@ function inferForecastArgsFromText(userText = "") {
   return { product, days_ahead };
 }
 
+const MONTH_INDEX = {
+  january: 0,
+  february: 1,
+  march: 2,
+  april: 3,
+  may: 4,
+  june: 5,
+  july: 6,
+  august: 7,
+  september: 8,
+  october: 9,
+  november: 10,
+  december: 11,
+};
+
+function toIsoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function parseFirstWeekRange(userText = "") {
+  const text = String(userText).toLowerCase();
+  const match = text.match(
+    /first\s+week\s+of\s+(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}|this\s+year|next\s+year|last\s+year))?/i
+  );
+  if (!match) return null;
+
+  const monthName = match[1].toLowerCase();
+  const yearToken = match[2] ? match[2].toLowerCase() : "";
+  const now = new Date();
+  let year = now.getFullYear();
+
+  if (/^\d{4}$/.test(yearToken)) {
+    year = Number(yearToken);
+  } else if (yearToken.includes("next")) {
+    year += 1;
+  } else if (yearToken.includes("last")) {
+    year -= 1;
+  }
+
+  const monthIndex = MONTH_INDEX[monthName];
+  if (monthIndex === undefined) return null;
+
+  const start = new Date(Date.UTC(year, monthIndex, 1));
+  const end = new Date(Date.UTC(year, monthIndex, 7));
+
+  return {
+    start_date: toIsoDate(start),
+    end_date: toIsoDate(end),
+  };
+}
+
+function daysFromTomorrowTo(targetIsoDate) {
+  const target = new Date(`${targetIsoDate}T00:00:00Z`);
+  if (Number.isNaN(target.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  const diffMs = target.getTime() - tomorrow.getTime();
+  return Math.floor(diffMs / 86400000) + 1;
+}
+
 /**
  * Normalize/fill tool args if model emitted incomplete args.
  */
 function normalizeToolArgs(toolName, args, userMessage) {
   const normalized = { ...(args || {}) };
+  const range = parseFirstWeekRange(userMessage);
 
   if (toolName === "forecast_demand") {
     const inferred = inferForecastArgsFromText(userMessage);
@@ -664,8 +727,38 @@ function normalizeToolArgs(toolName, args, userMessage) {
 
     if (!normalized.days_ahead && inferred.days_ahead) normalized.days_ahead = inferred.days_ahead;
     if (!normalized.days_ahead) normalized.days_ahead = 30;
+
+    if (range) {
+      normalized.start_date = normalized.start_date || range.start_date;
+      normalized.end_date = normalized.end_date || range.end_date;
+
+      const daysToEnd = daysFromTomorrowTo(range.end_date);
+      if (daysToEnd && daysToEnd > normalized.days_ahead) {
+        normalized.days_ahead = daysToEnd;
+      }
+    }
   }
 
+  if (toolName === "get_sales_analytics") {
+    // Infer product from user message if LLM didn't include it
+    const inferred = inferForecastArgsFromText(userMessage);
+    if (!normalized.product && inferred.product) {
+      normalized.product = inferred.product;
+    }
+    if (range) {
+      normalized.start_date = normalized.start_date || range.start_date;
+      normalized.end_date = normalized.end_date || range.end_date;
+      if (!normalized.analysis_type || normalized.analysis_type === "overview" || normalized.analysis_type === "top_sellers" || normalized.analysis_type === "by_channel") {
+        normalized.analysis_type = "trend";
+      }
+    }
+    // Default group_by to "day" for short periods
+    if (!normalized.group_by) {
+      normalized.group_by = "day";
+    }
+  }
+
+  console.log(`🔧 normalizeToolArgs(${toolName}):`, JSON.stringify(normalized));
   return normalized;
 }
 
@@ -686,27 +779,66 @@ function summarizeToolResult(toolName, fullResult) {
           return JSON.stringify(summary);
         }
         // Handle single-product response (has summary + daily_forecast)
+        const windowForecast = Array.isArray(data.daily_forecast_window)
+          ? data.daily_forecast_window
+          : null;
+        const chartPath = windowForecast && windowForecast.length ? "daily_forecast_window" : "daily_forecast";
+        const chartTitle = data.forecast_window
+          ? `🔮 Demand Forecast (${data.forecast_window.start_date} to ${data.forecast_window.end_date})`
+          : "🔮 Demand Forecast";
         const summary = {
           metadata: data.metadata,
-          summary: data.summary,
+          summary: data.summary_window || data.summary,
+          forecast_window: data.forecast_window,
+          summary_window: data.summary_window,
           profit_projection: data.profit_projection,
-          daily_forecast: data.daily_forecast || [],
-          _action_required: `YOU MUST NOW call the create_chart tool with these exact parameters: source_tool="forecast_demand", chart_type="line", title="🔮 Demand Forecast", x_field="date", y_field="predicted_quantity", data_path="daily_forecast". Do NOT describe chart instructions to the user — call the tool.`,
+          daily_forecast: windowForecast && windowForecast.length ? windowForecast : data.daily_forecast || [],
+          _action_required: `YOU MUST NOW call the create_chart tool with these exact parameters: source_tool="forecast_demand", chart_type="line", title="${chartTitle}", x_field="date", y_field="predicted_quantity", data_path="${chartPath}". Do NOT describe chart instructions to the user — call the tool.`,
         };
         return JSON.stringify(summary);
       }
 
       case "get_sales_analytics": {
         const innerData = data.data;
-        const sample = Array.isArray(innerData) ? innerData.slice(0, 3) : innerData;
+        const isArray = Array.isArray(innerData);
+        const includeAll = isArray && innerData.length <= 31;
+        const sample = isArray ? (includeAll ? innerData : innerData.slice(0, 3)) : innerData;
+        const totalQuantity = isArray
+          ? innerData.reduce((sum, row) => sum + (row.quantity || row.total_quantity || 0), 0)
+          : innerData?.total_quantity || 0;
+        let actionRequired = "";
+
+        if (isArray && innerData.length > 0) {
+          if (data.analysis_type === "trend") {
+            actionRequired =
+              "YOU MUST NOW call the create_chart tool with these exact parameters: " +
+              'source_tool="get_sales_analytics", chart_type="line", title="📈 Sales Trend", x_field="period", y_field="quantity", data_path="data". ' +
+              "Do NOT describe chart instructions to the user — call the tool.";
+          } else if (data.analysis_type === "by_product") {
+            actionRequired =
+              "YOU MUST NOW call the create_chart tool with these exact parameters: " +
+              'source_tool="get_sales_analytics", chart_type="bar", title="📊 Sales by Product", x_field="product", y_field="quantity", data_path="data". ' +
+              "Do NOT describe chart instructions to the user — call the tool.";
+          } else if (data.analysis_type === "by_channel") {
+            actionRequired =
+              "YOU MUST NOW call the create_chart tool with these exact parameters: " +
+              'source_tool="get_sales_analytics", chart_type="bar", title="📊 Sales by Channel", x_field="channel", y_field="revenue", data_path="data". ' +
+              "Do NOT describe chart instructions to the user — call the tool.";
+          }
+        } else if (data.analysis_type === "top_sellers" && innerData?.by_quantity?.length) {
+          actionRequired =
+            "YOU MUST NOW call the create_chart tool with these exact parameters: " +
+            'source_tool="get_sales_analytics", chart_type="bar", title="🏆 Top Sellers", x_field="product", y_field="total_quantity", data_path="data.by_quantity". ' +
+            "Do NOT describe chart instructions to the user — call the tool.";
+        }
+
         const summary = {
           analysis_type: data.analysis_type,
           period: data.period,
+          total_quantity: totalQuantity,
           data_sample: sample,
-          total_rows: Array.isArray(innerData) ? innerData.length : 1,
-          _action_required: Array.isArray(innerData) && innerData[0]
-            ? `YOU MUST NOW call the create_chart tool with: source_tool="get_sales_analytics", chart_type="bar", title="📊 Sales Analytics", x_field="${Object.keys(innerData[0])[0]}", y_field="${Object.keys(innerData[0]).find(k => k.includes('revenue') || k.includes('quantity') || k.includes('total')) || Object.keys(innerData[0])[1]}", data_path="data". Do NOT describe chart instructions to the user — call the tool.`
-            : "",
+          total_rows: isArray ? innerData.length : 1,
+          _action_required: actionRequired,
         };
         return JSON.stringify(summary);
       }
@@ -1020,15 +1152,21 @@ export function runAgentStreaming(userMessage, sessionId) {
                       if (data.product_summaries) {
                         return { title: "🔮 Demand Forecast — All Products", chart_type: "bar", x_field: "product", y_field: "total_predicted_quantity", data_path: "product_summaries" };
                       }
-                      if (data.daily_forecast_sample || data.daily_forecast || data.summary) {
+                      if (data.daily_forecast_sample || data.daily_forecast_window || data.daily_forecast || data.summary) {
                         const productName = data.metadata?.product || data.summary?.product || "Forecast";
+                        if (data.daily_forecast_window && Array.isArray(data.daily_forecast_window)) {
+                          const windowLabel = data.forecast_window?.start_date && data.forecast_window?.end_date
+                            ? ` (${data.forecast_window.start_date} → ${data.forecast_window.end_date})`
+                            : "";
+                          return { title: `🔮 Demand Forecast — ${productName}${windowLabel}`, chart_type: "line", x_field: "date", y_field: "predicted_quantity", data_path: "daily_forecast_window" };
+                        }
                         return { title: `🔮 Demand Forecast — ${productName}`, chart_type: "line", x_field: "date", y_field: "predicted_quantity", data_path: "daily_forecast" };
                       }
                       return null;
 
                     case "get_sales_analytics":
                       if (data.analysis_type === "trend") {
-                        return { title: "📈 Sales Trend", chart_type: "line", x_field: "period", y_field: "revenue", data_path: "data" };
+                        return { title: "📈 Sales Trend", chart_type: "line", x_field: "period", y_field: "quantity", data_path: "data" };
                       }
                       if (data.analysis_type === "by_product") {
                         return { title: "📊 Sales by Product", chart_type: "bar", x_field: "product", y_field: "revenue", data_path: "data" };
@@ -1084,8 +1222,9 @@ export function runAgentStreaming(userMessage, sessionId) {
                       console.error(`🔍 Comparison debug: sales.analysis_type=${salesData.analysis_type}, forecast.metadata.product=${forecastData.metadata?.product}, has salesData.data=${!!salesData.data}, has forecastData.summary=${!!forecastData.summary}, has forecastData.product_summaries=${!!forecastData.product_summaries}`);
 
                       const isSalesTrend = salesData.analysis_type === "trend";
-                      const isSingleForecast = forecastData.daily_forecast || forecastData.daily_forecast_sample;
+                        const isSingleForecast = forecastData.daily_forecast_window || forecastData.daily_forecast || forecastData.daily_forecast_sample;
                       const productName = forecastData.metadata?.product || forecastData.summary?.product || "Product";
+                        const forecastPath = forecastData.daily_forecast_window ? "daily_forecast_window" : "daily_forecast";
 
                       let comparisonConfig = null;
 
@@ -1096,7 +1235,7 @@ export function runAgentStreaming(userMessage, sessionId) {
                           title: `📈 ${productName}: Past Sales vs Forecast`,
                           sources: [
                             { type: "line", source_tool: "get_sales_analytics", x_field: "period", y_field: "quantity", label: "Past Sales (Actual)", data_path: "data" },
-                            { type: "line", source_tool: "forecast_demand", x_field: "date", y_field: "predicted_quantity", label: "Future Forecast", data_path: "daily_forecast" },
+                              { type: "line", source_tool: "forecast_demand", x_field: "date", y_field: "predicted_quantity", label: "Future Forecast", data_path: forecastPath },
                           ],
                         };
                       } else {

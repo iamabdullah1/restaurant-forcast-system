@@ -338,6 +338,7 @@ function wrapMCPToolForLangChain(mcpTool, client) {
  */
 export async function getMCPTools() {
   // ── RETURN CACHED TOOLS IF ALREADY INITIALIZED ──
+  // NOTE: After MCP schema changes, clear caches by restarting the dev server.
   if (globalForMCP._mcpTools && globalForMCP._mcpTools.length > 0) {
     return globalForMCP._mcpTools;
   }

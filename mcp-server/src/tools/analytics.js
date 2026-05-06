@@ -37,10 +37,11 @@ import { cacheGet, cacheSet } from "../utils/cache.js";
 const ANALYTICS_CACHE_TTL_MS = Number(process.env.ANALYTICS_CACHE_TTL_MS || 60_000); // 60s default
 const analyticsCache = new Map();
 
-function getAnalyticsCacheKey({ analysis_type, days, group_by, start_date, end_date }) {
+function getAnalyticsCacheKey({ analysis_type, product, days, group_by, start_date, end_date }) {
   return [
     "get_sales_analytics",
     `type=${analysis_type}`,
+    `product=${product || "all"}`,
     `days=${Number(days)}`,
     `group=${group_by || ""}`,
     `start=${start_date || ""}`,
@@ -83,8 +84,12 @@ async function writeAnalyticsCache(key, value) {
  * 🎓 $gte means "greater than or equal to" — a MongoDB comparison operator.
  *    So { date: { $gte: someDate } } means "date >= someDate"
  */
-async function buildDateFilter(days, start_date, end_date) {
-  return await buildSmartDateFilter(days, start_date, end_date);
+async function buildDateFilter(days, start_date, end_date, product) {
+  const dateFilter = await buildSmartDateFilter(days, start_date, end_date);
+  if (product && product !== "all") {
+    dateFilter.product = product;
+  }
+  return dateFilter;
 }
 
 // ─── Analysis: Overview (Total summary) ─────────────────
@@ -368,16 +373,19 @@ async function getTopSellers(dateFilter, limit = 5) {
  */
 export async function handleGetSalesAnalytics({
   analysis_type = "overview",
+  product = undefined,
   days = 30,
   group_by = "day",
   start_date = undefined,
   end_date = undefined,
 }) {
   try {
-    const cacheKey = getAnalyticsCacheKey({ analysis_type, days, group_by, start_date, end_date });
+    console.error(`📊 get_sales_analytics called with:`, { analysis_type, product, days, group_by, start_date, end_date });
+
+    const cacheKey = getAnalyticsCacheKey({ analysis_type, product, days, group_by, start_date, end_date });
     const cached = await readAnalyticsCache(cacheKey);
     if (cached) {
-      console.error(`⚡ get_sales_analytics cache hit: ${analysis_type}, days=${days}, group_by=${group_by}`);
+      console.error(`⚡ get_sales_analytics cache hit: ${analysis_type}, product=${product}, days=${days}, group_by=${group_by}`);
       return {
         content: [
           {
@@ -388,7 +396,8 @@ export async function handleGetSalesAnalytics({
       };
     }
 
-    const dateFilter = await buildDateFilter(days, start_date, end_date);
+    const dateFilter = await buildDateFilter(days, start_date, end_date, product);
+    console.error(`📊 MongoDB filter:`, JSON.stringify(dateFilter));
 
     /**
      * 🎓 Dispatcher Pattern:

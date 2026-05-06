@@ -76,9 +76,9 @@ function parseSalesAnalytics(raw) {
         title: "📈 Sales Trend",
         data: innerData.map((t) => ({
           date: (t.period || t.date || "").slice(5),
-          value: Math.round(t.revenue || t.total_revenue || 0),
+          value: Math.round(t.quantity || t.total_quantity || 0),
         })),
-        valueLabel: "Revenue ($)",
+        valueLabel: "Units",
       };
     }
 
@@ -149,12 +149,19 @@ function parseForecastDemand(raw) {
 
     // Single product: { metadata, summary, daily_forecast: [...] }
     // Each row: { date, day_name, predicted_quantity, confidence_low, confidence_high, ... }
-    if (data.daily_forecast && Array.isArray(data.daily_forecast) && data.daily_forecast.length > 0) {
+    const forecastWindow = Array.isArray(data.daily_forecast_window) && data.daily_forecast_window.length > 0
+      ? data.daily_forecast_window
+      : null;
+    const forecastRows = forecastWindow || (Array.isArray(data.daily_forecast) ? data.daily_forecast : null);
+    if (forecastRows && forecastRows.length > 0) {
       const productName = data.metadata?.product || data.summary?.product || "All Products";
+      const windowLabel = data.forecast_window?.start_date && data.forecast_window?.end_date
+        ? ` (${data.forecast_window.start_date} → ${data.forecast_window.end_date})`
+        : "";
       return {
         type: "line",
-        title: `🔮 Demand Forecast — ${productName}`,
-        data: data.daily_forecast.slice(0, 30).map((f) => ({
+        title: `🔮 Demand Forecast — ${productName}${windowLabel}`,
+        data: forecastRows.slice(0, 60).map((f) => ({
           date: (f.date || "").slice(5),
           value: Math.round(
             f.predicted_quantity || f.predicted_demand || f.predicted || f.yhat || f.value || 0
@@ -346,7 +353,7 @@ function parseCreateChart(chartInstruction, allToolData) {
     // If data_path didn't work, try common paths automatically
     if (!Array.isArray(dataArray)) {
       const commonPaths = [
-        "daily_forecast", "product_breakdown", "products",
+        "daily_forecast_window", "daily_forecast", "product_breakdown", "products",
         "data", "forecast", "predictions", "trend",
         "inventory", "by_product", "by_channel",
       ];
@@ -450,7 +457,7 @@ function parseMultiSourceChart(chartInstruction, allToolData) {
       }
       if (!Array.isArray(dataArray)) {
         const commonPaths = [
-          "daily_forecast", "product_breakdown", "products",
+          "daily_forecast_window", "daily_forecast", "product_breakdown", "products",
           "data", "forecast", "predictions", "trend",
           "inventory", "by_product", "by_channel",
         ];

@@ -57,6 +57,14 @@ server.tool(
       .max(1000)
       .default(30)
       .describe("Number of days to forecast (1-1000, default 30)"),
+    start_date: z
+      .string()
+      .optional()
+      .describe("Optional ISO start date (YYYY-MM-DD) for a target forecast window."),
+    end_date: z
+      .string()
+      .optional()
+      .describe("Optional ISO end date (YYYY-MM-DD) for a target forecast window."),
   },
   handleForecastDemand
 );
@@ -132,12 +140,18 @@ server.tool(
   "Analyze historical sales data with multiple analysis types. 'overview' = total summary, " +
     "'by_product' = breakdown per product, 'by_channel' = breakdown per channel (Dine-in/Takeaway/Online), " +
     "'trend' = sales over time (day/week/month), 'top_sellers' = top products by volume/revenue. " +
+    "Supports product filter to narrow to a specific product. " +
+    "Use start_date + end_date for specific calendar periods (e.g. first week of August 2024). " +
     "Use when user asks about sales trends, performance, comparisons, or analytics.",
   {
     analysis_type: z
       .enum(["overview", "by_product", "by_channel", "trend", "top_sellers"])
       .default("overview")
       .describe("Type of analysis to run (default 'overview')"),
+    product: z
+      .enum(["Burgers", "Chicken Sandwiches", "Fries", "Beverages", "Sides & Other", "all"])
+      .optional()
+      .describe("Optional: filter analytics by a specific product (default = all products)"),
     days: z
       .number()
       .min(0)

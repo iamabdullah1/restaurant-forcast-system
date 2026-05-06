@@ -91,9 +91,14 @@ async function writeForecastCache(key, value) {
  * @param {string} params.product - product to forecast (or "all")
  * @param {number} params.days_ahead - how many days to predict (1-90)
  */
-export async function handleForecastDemand({ product = "all", days_ahead = 30 }) {
+export async function handleForecastDemand({
+  product = "all",
+  days_ahead = 30,
+  start_date = undefined,
+  end_date = undefined,
+}) {
   try {
-    const cacheKey = getForecastCacheKey(product, days_ahead);
+    const cacheKey = getForecastCacheKey(product, `${days_ahead}|${start_date || ""}|${end_date || ""}`);
     const cached = await readForecastCache(cacheKey);
     if (cached) {
       console.error(`⚡ forecast_demand cache hit: ${product}, ${days_ahead} days`);
@@ -114,12 +119,13 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
 
     if (mlResult) {
       console.error(`✅ ML service responded successfully`);
-      await writeForecastCache(cacheKey, mlResult);
+      const windowed = applyForecastWindow(mlResult, start_date, end_date);
+      await writeForecastCache(cacheKey, windowed);
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(mlResult, null, 2),
+            text: JSON.stringify(windowed, null, 2),
           },
         ],
       };
@@ -128,13 +134,14 @@ export async function handleForecastDemand({ product = "all", days_ahead = 30 })
     // ── Attempt 2: Fallback to moving-average stub ───
     console.error(`⚠️  ML service unavailable, using moving-average fallback`);
     const fallbackResult = await movingAverageFallback(product, days_ahead);
-    await writeForecastCache(cacheKey, fallbackResult);
+    const fallbackWindowed = applyForecastWindow(fallbackResult, start_date, end_date);
+    await writeForecastCache(cacheKey, fallbackWindowed);
 
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify(fallbackResult, null, 2),
+          text: JSON.stringify(fallbackWindowed, null, 2),
         },
       ],
     };
@@ -351,6 +358,64 @@ function formatMLResponse(product, days, forecastData, profitData) {
       blended_margin: profitData.combined?.blended_margin_percent || 0,
       avg_daily_profit: profitData.combined?.avg_daily_profit || 0,
     },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// FORECAST WINDOW FILTERING
+// ═══════════════════════════════════════════════════════════
+function parseIsoDate(value) {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function applyForecastWindow(result, startDateStr, endDateStr) {
+  if (!result || (!startDateStr && !endDateStr)) return result;
+
+  const start = parseIsoDate(startDateStr);
+  const end = parseIsoDate(endDateStr);
+  if (!start && !end) return result;
+
+  const windowLabel = {
+    start_date: startDateStr || null,
+    end_date: endDateStr || null,
+  };
+
+  if (result.product_summaries) {
+    return {
+      ...result,
+      forecast_window: windowLabel,
+    };
+  }
+
+  if (!Array.isArray(result.daily_forecast)) {
+    return {
+      ...result,
+      forecast_window: windowLabel,
+    };
+  }
+
+  const inWindow = result.daily_forecast.filter((row) => {
+    const rowDate = parseIsoDate(row.date);
+    if (!rowDate) return false;
+    if (start && rowDate < start) return false;
+    if (end && rowDate > end) return false;
+    return true;
+  });
+
+  const total = inWindow.reduce((sum, row) => sum + (row.predicted_quantity || 0), 0);
+  const avg = inWindow.length ? Math.round(total / inWindow.length) : 0;
+
+  return {
+    ...result,
+    forecast_window: windowLabel,
+    summary_window: {
+      total_predicted_quantity: total,
+      avg_daily_predicted: avg,
+      days: inWindow.length,
+    },
+    daily_forecast_window: inWindow,
   };
 }
 
