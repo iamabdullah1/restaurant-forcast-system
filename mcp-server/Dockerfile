@@ -10,5 +10,6 @@ COPY . .
 # Optional HTTP API (set PORT or MCP_HTTP_PORT at runtime)
 EXPOSE 7860
 
-# Start the MCP server using standard IO transport
+# Start the MCP server. We set PORT=7860 so the HTTP bridge starts up.
+ENV PORT=7860
 CMD ["npm", "start"]
