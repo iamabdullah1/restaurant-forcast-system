@@ -25,6 +25,7 @@ import { handleGetSalesAnalytics } from "./tools/analytics.js";
 import { handleCalculateProfit } from "./tools/profit.js";
 import { handleForecastDemand } from "./tools/forecast.js";
 import { handleCreateChart } from "./tools/chart.js";
+import { startHttpServer } from "./http.js";
 
 // ─── CREATE SERVER ──────────────────────────────────────
 // name + version are sent to AI clients during the MCP handshake
@@ -444,6 +445,10 @@ server.prompt(
 async function main() {
   await connectDB();
   console.error("✅ MongoDB connected");
+
+  if (process.env.MCP_HTTP_PORT || process.env.PORT) {
+    startHttpServer(server);
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

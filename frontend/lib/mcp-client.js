@@ -50,6 +50,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import path from "path";
@@ -356,39 +357,32 @@ export async function getMCPTools() {
     version: "1.0.0",
   });
 
-  // ── STEP 2: CREATE STDIO TRANSPORT ──
-  /**
-   * 🎓 StdioClientTransport — HOW we connect to the MCP Server
-   *
-   *    This spawns the MCP Server as a CHILD PROCESS:
-   *      command: "node"
-   *      args: ["src/index.js"]
-   *      cwd: "../mcp-server"  (where the server code lives)
-   *
-   *    Communication happens via stdin/stdout pipes:
-   *      Client writes JSON → Server's stdin
-   *      Server writes JSON → Client reads from stdout
-   *
-   *    The `env` option passes environment variables to the child process.
-   *    We spread process.env so the MCP Server inherits everything,
-   *    including MONGODB_URI, ML_SERVICE_URL, etc.
-   *
-   *    🎓 WHY path.resolve?
-   *       `process.cwd()` in Next.js is the `frontend/` directory.
-   *       Our MCP Server is at `../mcp-server/`.
-   *       path.resolve converts this to an absolute path so Node.js
-   *       can find the server code regardless of where we run from.
-   */
-  const mcpServerPath = path.resolve(process.cwd(), "..", "mcp-server");
+  // ── STEP 2: CREATE TRANSPORT (SSE OR STDIO) ──
+  let transport;
+  if (process.env.REMOTE_MCP_URL) {
+    /**
+     * 🎓 SSE (Server-Sent Events) Transport — for remote execution (e.g., HF Spaces/Vercel).
+     *    Connects to the `/mcp/sse` endpoint we exposed in `mcp-server/src/http.js`.
+     */
+    console.log(`   - Connecting via HTTP SSE to: ${process.env.REMOTE_MCP_URL}/mcp/sse`);
+    // NOTE: Node fetch is available globally in Next.js 14+ / Node 18+
+    transport = new SSEClientTransport(new URL(`${process.env.REMOTE_MCP_URL}/mcp/sse`));
+  } else {
+    /**
+     * 🎓 StdioClientTransport — for local execution (spawns child process).
+     */
+    console.log(`   - Connecting via STDIO child process...`);
+    const mcpServerPath = path.resolve(process.cwd(), "..", "mcp-server");
 
-  const transport = new StdioClientTransport({
-    command: "node",
-    args: ["src/index.js"],
-    cwd: mcpServerPath,
-    env: {
-      ...process.env, // Inherit all env vars (MONGODB_URI, etc.)
-    },
-  });
+    transport = new StdioClientTransport({
+      command: "node",
+      args: ["src/index.js"],
+      cwd: mcpServerPath,
+      env: {
+        ...process.env, // Inherit all env vars
+      },
+    });
+  }
 
   // ── STEP 3: CONNECT TO MCP SERVER ──
   /**
