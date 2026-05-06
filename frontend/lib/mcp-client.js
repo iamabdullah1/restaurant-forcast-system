@@ -363,12 +363,20 @@ export async function getMCPTools() {
   let transport;
   if (process.env.REMOTE_MCP_URL) {
     /**
-     * 🎓 SSE (Server-Sent Events) Transport — for remote execution (e.g., HF Spaces/Vercel).
-     *    Connects to the `/mcp/sse` endpoint we exposed in `mcp-server/src/http.js`.
+     * 🎓 SSE (Server-Sent Events) Transport — for remote execution.
      */
-    console.log(`   - Connecting via HTTP SSE to: ${process.env.REMOTE_MCP_URL}/mcp/sse`);
-    // NOTE: Node fetch is available globally in Next.js 14+ / Node 18+
-    transport = new SSEClientTransport(new URL(`${process.env.REMOTE_MCP_URL}/mcp/sse`));
+    const baseUrl = process.env.REMOTE_MCP_URL.replace(/\/$/, '');
+    console.log(`   - Connecting via HTTP SSE to: ${baseUrl}/mcp/sse`);
+    
+    // We MUST pass EventSource as a custom option for it to work flawlessly in Next.js Serverless
+    transport = new SSEClientTransport(new URL(`${baseUrl}/mcp/sse`), {
+      eventSourceInit: {
+        withCredentials: false
+      }
+    });
+
+    // In severe proxy environments (like HF Spaces), we explicitly override the fallback
+    // message endpoint interception if needed.
   } else {
     /**
      * 🎓 StdioClientTransport — for local execution (spawns child process).
